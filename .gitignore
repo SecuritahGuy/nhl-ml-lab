@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Project cache
+backend/.cache/
+
+# Data files
+data/
+
+# Jupyter notebooks
+notebooks/
+
+# ML models (can be regenerated)
+backend/models/
+
+# Frontend
+website/node_modules/
+website/.next/
+website/out/
+website/dist/
