@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Navbar from "@/components/Navbar";
+import { apiUrl } from "@/lib/api";
 
 interface TeamInfo {
   abbrev: string;
@@ -47,7 +48,7 @@ export default function PredictionsPage() {
   const fetchBulk = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/predictions");
+      const res = await fetch(apiUrl("/api/predictions"));
       const json = await res.json() as PredictionsResponse;
       setBulkPredictions(json.predictions || []);
     } catch (e) {
@@ -65,7 +66,7 @@ export default function PredictionsPage() {
     if (!gameId) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/predictions/${gameId}`);
+      const res = await fetch(apiUrl(`/api/predictions/${gameId}`));
       const json = await res.json();
       setGamePrediction(json as PredictionData);
     } catch (e) {

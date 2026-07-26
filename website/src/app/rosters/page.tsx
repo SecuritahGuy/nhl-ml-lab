@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Navbar from "@/components/Navbar";
+import { apiUrl } from "@/lib/api";
 
 interface RosterPlayer {
   id: number;
@@ -90,7 +91,7 @@ export default function RostersPage() {
   const fetchRoster = async (t: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/rosters/${t}`);
+      const res = await fetch(apiUrl(`/api/rosters/${t}`));
       const json = await res.json();
       setData(json);
     } catch (e) {
@@ -101,7 +102,7 @@ export default function RostersPage() {
   };
 
   useEffect(() => {
-    fetch("/api/teams")
+    fetch(apiUrl("/api/teams"))
       .then((r) => r.json())
       .then((json) => {
         if (json.teams) setTeams(json.teams.map((t: any) => t.abbrev));
