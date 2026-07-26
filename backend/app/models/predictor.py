@@ -156,11 +156,20 @@ def predict_game(home_team: str, away_team: str,
     h_rolling = _build_rolling(hs, h_gf, h_ga, h_wp)
     a_rolling = _build_rolling(aws, a_gf, a_ga, a_wp)
 
+    # game context features
+    home_b2b = _safe(hs, "b2b", 0)
+    away_b2b = _safe(aws, "b2b", 0)
+    travel_miles = _safe(hs, "travel_miles", 0)
+    tz_crossed_ = _safe(hs, "tz_crossed", 0)
+    alt_advantage = _safe(hs, "alt_advantage", 0)
+    high_alt_home = _safe(hs, "high_alt_home", 0)
+
     features = [h_gf, h_ga, h_pp, h_pk, h_fo, h_sf, h_sa, h_pt,
                 a_gf, a_ga, a_pp, a_pk, a_fo, a_sf, a_sa, a_pt,
                 h_wp, a_wp,
                 gf_diff, ga_diff, net_diff, st_diff, shot_diff,
-                corsi_diff, fo_diff, pp_diff, pk_diff] + h_rolling + a_rolling
+                corsi_diff, fo_diff, pp_diff, pk_diff,
+                home_b2b, away_b2b, travel_miles, tz_crossed_, alt_advantage, high_alt_home] + h_rolling + a_rolling
 
     ml = predict(features)
     if ml is not None:

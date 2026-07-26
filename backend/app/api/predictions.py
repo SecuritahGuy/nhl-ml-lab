@@ -132,6 +132,24 @@ async def _predict_for_game(game_id: int, home_data: dict, away_data: dict,
         hs.update(home_roll)
         aws.update(away_roll)
 
+        # back-to-back: check if team played previous day
+        from datetime import datetime, timedelta
+        from app.services.locations import travel_distance_miles, tz_crossed, altitude_advantage_ft, high_altitude_home
+        gd_dt = datetime.strptime(game_date, "%Y-%m-%d") if game_date else datetime.today()
+        prev = (gd_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+        team_game_dates: dict[int, set] = {}
+        for sg in season_games:
+            for tid_ in [sg.get("homeTeamId"), sg.get("visitingTeamId")]:
+                if tid_:
+                    team_game_dates.setdefault(tid_, set()).add(sg.get("gameDate", ""))
+        hs["b2b"] = 1 if prev in team_game_dates.get(home_tid, set()) else 0
+        aws["b2b"] = 1 if prev in team_game_dates.get(away_tid, set()) else 0
+
+        hs["travel_miles"] = travel_distance_miles(home_tid, away_tid)
+        hs["tz_crossed"] = tz_crossed(home_tid, away_tid)
+        hs["alt_advantage"] = altitude_advantage_ft(home_tid, away_tid)
+        hs["high_alt_home"] = high_altitude_home(home_tid)
+
     result = predict_game(
         home_team=home_abbrev,
         away_team=away_abbrev,

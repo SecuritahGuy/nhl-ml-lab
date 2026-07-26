@@ -162,8 +162,35 @@ async def build_training_data(seasons: list[str]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+
+    # Game context features
     df["game_date"] = pd.to_datetime(df["game_date"])
     df = df.sort_values(["game_date", "game_id"]).reset_index(drop=True)
+
+    from app.services.locations import travel_distance_miles, tz_crossed, altitude_advantage_ft, high_altitude_home
+
+    df["travel_miles"] = df.apply(lambda r: travel_distance_miles(int(r["home_team_id"]), int(r["away_team_id"])), axis=1)
+    df["tz_crossed"] = df.apply(lambda r: tz_crossed(int(r["home_team_id"]), int(r["away_team_id"])), axis=1)
+    df["alt_advantage"] = df.apply(lambda r: altitude_advantage_ft(int(r["home_team_id"]), int(r["away_team_id"])), axis=1)
+    df["high_alt_home"] = df.apply(lambda r: high_altitude_home(int(r["home_team_id"])), axis=1)
+
+    # Back-to-back: check if each team played the previous day
+    team_dates: dict[int, set] = {}
+    for _, r in df.iterrows():
+        for tid in [int(r["home_team_id"]), int(r["away_team_id"])]:
+            if tid not in team_dates:
+                team_dates[tid] = set()
+            team_dates[tid].add(r["game_date"].strftime("%Y-%m-%d"))
+
+    home_b2b, away_b2b = [], []
+    from datetime import timedelta
+    for _, r in df.iterrows():
+        prev = (r["game_date"] - timedelta(days=1)).strftime("%Y-%m-%d")
+        home_b2b.append(1 if prev in team_dates.get(int(r["home_team_id"]), set()) else 0)
+        away_b2b.append(1 if prev in team_dates.get(int(r["away_team_id"]), set()) else 0)
+    df["home_b2b"] = home_b2b
+    df["away_b2b"] = away_b2b
+
     logger.info(f"  Total games: {len(df)}")
     return df
 
@@ -187,6 +214,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         "home_win_pct", "away_win_pct",
         "gf_diff", "ga_diff", "net_diff", "st_diff", "shot_diff",
         "corsi_diff", "fo_diff", "pp_diff", "pk_diff",
+        "home_b2b", "away_b2b", "travel_miles", "tz_crossed", "alt_advantage", "high_alt_home",
         "game_id", "game_date", "home_team_id", "away_team_id",
         "home_score", "away_score", "home_win", "season", "game_type",
     ]
@@ -265,6 +293,8 @@ def _make_features(df: pd.DataFrame) -> list[str]:
         "home_win_pct", "away_win_pct",
         "gf_diff", "ga_diff", "net_diff", "st_diff", "shot_diff",
         "corsi_diff", "fo_diff", "pp_diff", "pk_diff",
+        "home_b2b", "away_b2b",
+        "travel_miles", "tz_crossed", "alt_advantage", "high_alt_home",
     ]
     for side in ["home", "away"]:
         for sfx in ROLLING_SUFFIXES:

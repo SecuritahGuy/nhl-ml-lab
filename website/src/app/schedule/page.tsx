@@ -31,11 +31,13 @@ interface ScheduleData {
   games: Game[];
 }
 
-function stateColor(state: string): string {
-  if (state === "OFF" || state === "FINAL") return "bg-green-100 text-green-800";
-  if (state === "LIVE") return "bg-red-100 text-red-800 animate-pulse";
-  if (state === "FUT") return "bg-blue-100 text-blue-800";
-  return "bg-gray-100 text-gray-800";
+interface Prediction {
+  game_id: number;
+  home_win_probability: number;
+  away_win_probability: number;
+  predicted_home_score: number;
+  predicted_away_score: number;
+  confidence: number;
 }
 
 function stateLabel(state: string, gameType: number): string {
@@ -48,21 +50,38 @@ function stateLabel(state: string, gameType: number): string {
 export default function SchedulePage() {
   const [data, setData] = useState<ScheduleData | null>(null);
   const [teamData, setTeamData] = useState<ScheduleData | null>(null);
+  const [predictions, setPredictions] = useState<Map<number, Prediction>>(new Map());
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<"daily" | "team">("daily");
   const [selectedTeam, setSelectedTeam] = useState("BOS");
   const [teams, setTeams] = useState<string[]>([]);
 
-  const fetchSchedule = async () => {
+  const fetchData = async () => {
     setLoading(true);
     try {
-      const url = mode === "team"
-        ? `/api/schedule/team/${selectedTeam}`
-        : "/api/schedule";
-      const res = await fetch(url);
-      const json = await res.json();
-      if (mode === "team") setTeamData(json);
-      else setData(json);
+      const [scheduleRes, predsRes] = await Promise.all([
+        fetch(mode === "team" ? `/api/schedule/team/${selectedTeam}` : "/api/schedule"),
+        fetch("/api/predictions"),
+      ]);
+      const scheduleJson = await scheduleRes.json();
+      if (mode === "team") setTeamData(scheduleJson);
+      else setData(scheduleJson);
+
+      const predsJson = await predsRes.json();
+      const predMap = new Map<number, Prediction>();
+      if (predsJson.predictions) {
+        for (const p of predsJson.predictions) {
+          predMap.set(p.game_id, {
+            game_id: p.game_id,
+            home_win_probability: p.home_win_probability,
+            away_win_probability: p.away_win_probability,
+            predicted_home_score: p.predicted_home_score,
+            predicted_away_score: p.predicted_away_score,
+            confidence: p.confidence,
+          });
+        }
+      }
+      setPredictions(predMap);
     } catch (e) {
       console.error(e);
     } finally {
@@ -72,11 +91,11 @@ export default function SchedulePage() {
 
   useEffect(() => {
     fetchTeams();
-    fetchSchedule();
+    fetchData();
   }, []);
 
   useEffect(() => {
-    if (mode === "team") fetchSchedule();
+    if (mode === "team") fetchData();
   }, [selectedTeam, mode]);
 
   const fetchTeams = async () => {
@@ -93,6 +112,35 @@ export default function SchedulePage() {
   const headerDate = mode === "team"
     ? `${selectedTeam} Schedule`
     : data?.current_date || data?.date || "Today";
+
+  const ProbBar = ({ gameId }: { gameId: number }) => {
+    const p = predictions.get(gameId);
+    if (!p) return null;
+    const hp = p.home_win_probability;
+
+    if (hp === 0 && p.away_win_probability === 1) {
+      return <div className="text-xs text-gray-400 italic">Model unavailable</div>;
+    }
+
+    return (
+      <div className="w-28">
+        <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
+          <div
+            className="absolute left-0 top-0 h-full bg-nhl-red rounded-full"
+            style={{ width: `${hp * 100}%` }}
+          />
+          <div
+            className="absolute top-0 h-full bg-blue-600 rounded-full"
+            style={{ left: `${hp * 100}%`, width: `${(1 - hp) * 100}%` }}
+          />
+        </div>
+        <div className="flex justify-between text-xs text-gray-500 mt-0.5">
+          <span>{(hp * 100).toFixed(0)}%</span>
+          <span>{((1 - hp) * 100).toFixed(0)}%</span>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -151,11 +199,21 @@ export default function SchedulePage() {
               />
             </div>
             <div className="flex items-center gap-4">
-              <span className="text-lg font-mono w-16 text-center">
-                {game.away_score ?? "-"} - {game.home_score ?? "-"}
-              </span>
+              {(game.game_state === "FUT" || game.game_state === "PRE") ? (
+                <ProbBar gameId={game.id} />
+              ) : (
+                <span className="text-lg font-mono w-16 text-center">
+                  {game.away_score ?? "-"} - {game.home_score ?? "-"}
+                </span>
+              )}
               <span
-                className={`text-xs px-2 py-1 rounded ${stateColor(game.game_state)}`}
+                className={`text-xs px-2 py-1 rounded ${
+                  game.game_state === "OFF" || game.game_state === "FINAL"
+                    ? "bg-green-100 text-green-800"
+                    : game.game_state === "LIVE"
+                    ? "bg-red-100 text-red-800 animate-pulse"
+                    : "bg-blue-100 text-blue-800"
+                }`}
               >
                 {stateLabel(game.game_state, game.game_type)}
               </span>
