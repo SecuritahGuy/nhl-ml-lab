@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query
-from app.services.nhl import get_team_roster, parse_roster, get_all_teams, _roster_player
+from app.services.nhl import get_team_roster, parse_roster, get_all_teams
 
 router = APIRouter()
 

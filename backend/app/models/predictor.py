@@ -9,9 +9,11 @@ DECAY_FACTORS = [0.7, 0.8, 0.9]
 ROLLING_SUFFIXES = (
     [f"gf_roll{w}" for w in ROLLING_WINDOWS]
     + [f"ga_roll{w}" for w in ROLLING_WINDOWS]
+    + [f"gd_roll{w}" for w in ROLLING_WINDOWS]
     + [f"win_roll{w}" for w in ROLLING_WINDOWS]
     + [f"gf_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"ga_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
+    + [f"gd_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"win_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + ["rest_days"]
 )
@@ -115,9 +117,9 @@ def predict_game(home_team: str, away_team: str,
     # win percentages
     def _wp(s):
         w = _safe(s, "wins", 0)
-        l = _safe(s, "losses", 0)
+        losses = _safe(s, "losses", 0)
         ot = _safe(s, "ot_losses", 0)
-        t = w + l + ot
+        t = w + losses + ot
         return w / t if t > 0 else 0.5
     h_wp = _wp(hs)
     a_wp = _wp(aws)
@@ -149,6 +151,8 @@ def predict_game(home_team: str, away_team: str,
                 out.append(_safe(stats, sfx, gf_fb))
             elif stat_type == "ga":
                 out.append(_safe(stats, sfx, ga_fb))
+            elif stat_type == "gd":
+                out.append(_safe(stats, sfx, gf_fb - ga_fb))
             else:
                 out.append(_safe(stats, sfx, wp_fb))
         return out
@@ -159,6 +163,9 @@ def predict_game(home_team: str, away_team: str,
     # game context features
     home_b2b = _safe(hs, "b2b", 0)
     away_b2b = _safe(aws, "b2b", 0)
+    home_rest_cat = _safe(hs, "rest_cat", 4)
+    away_rest_cat = _safe(aws, "rest_cat", 4)
+    day_of_season_ = _safe(hs, "day_of_season", 50)
     travel_miles = _safe(hs, "travel_miles", 0)
     tz_crossed_ = _safe(hs, "tz_crossed", 0)
     alt_advantage = _safe(hs, "alt_advantage", 0)
@@ -174,6 +181,15 @@ def predict_game(home_team: str, away_team: str,
     h_avg_ppg = _safe(hs, "team_avg_ppg", 0.3)
     a_avg_ppg = _safe(aws, "team_avg_ppg", 0.3)
 
+    h_sat = _safe(hs, "sat_pct", 0.50)
+    a_sat = _safe(aws, "sat_pct", 0.50)
+    h_pp_opp = _safe(hs, "pp_opp_per_game", 2.5)
+    a_pp_opp = _safe(aws, "pp_opp_per_game", 2.5)
+    h_tsh = _safe(hs, "tsh_per_game", 3.0)
+    a_tsh = _safe(aws, "tsh_per_game", 3.0)
+    h_es_gf = _safe(hs, "es_gf_per_game", 1.8)
+    a_es_gf = _safe(aws, "es_gf_per_game", 1.8)
+
     features = [h_gf, h_ga, h_pp, h_pk, h_fo, h_sf, h_sa, h_pt,
                 a_gf, a_ga, a_pp, a_pk, a_fo, a_sf, a_sa, a_pt,
                 h_wp, a_wp,
@@ -183,7 +199,9 @@ def predict_game(home_team: str, away_team: str,
                 h_goalie_sv, a_goalie_sv,
                 h_goalie_gaa, a_goalie_gaa,
                 h_top_ppg, a_top_ppg,
-                h_avg_ppg, a_avg_ppg] + h_rolling + a_rolling
+                h_avg_ppg, a_avg_ppg,
+                h_sat, a_sat, h_pp_opp, a_pp_opp, h_tsh, a_tsh, h_es_gf, a_es_gf,
+                home_rest_cat, away_rest_cat, day_of_season_] + h_rolling + a_rolling
 
     ml = predict(features)
     if ml is not None:

@@ -1,6 +1,5 @@
 import httpx
 import logging
-from typing import Any
 from app.services import cache
 
 logger = logging.getLogger(__name__)

@@ -39,9 +39,11 @@ DECAY_FACTORS = [0.7, 0.8, 0.9]
 ROLLING_SUFFIXES = (
     [f"gf_roll{w}" for w in ROLLING_WINDOWS]
     + [f"ga_roll{w}" for w in ROLLING_WINDOWS]
+    + [f"gd_roll{w}" for w in ROLLING_WINDOWS]
     + [f"win_roll{w}" for w in ROLLING_WINDOWS]
     + [f"gf_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"ga_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
+    + [f"gd_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"win_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + ["rest_days"]
 )
@@ -68,28 +70,51 @@ async def fetch_games(season: str) -> list[dict]:
 
 
 async def fetch_team_stats(season: str) -> dict[str, dict]:
-    data = await _fetch(
-        f"{STATS_API}/team/summary?cayenneExp=seasonId={season}%20and%20gameTypeId=2&limit=100"
+    async def _fetch_report(report: str) -> dict[str, dict]:
+        data = await _fetch(
+            f"{STATS_API}/team/{report}?cayenneExp=seasonId={season}%20and%20gameTypeId=2&limit=100"
+        )
+        if data and "data" in data:
+            return {str(t.get("teamId")): t for t in data["data"]}
+        return {}
+
+    summary_map, rt_map, pp_map, pk_map, gfbs_map, fo_map = await asyncio.gather(
+        _fetch_report("summary"),
+        _fetch_report("realtime"),
+        _fetch_report("powerplay"),
+        _fetch_report("penaltykill"),
+        _fetch_report("goalsforbystrength"),
+        _fetch_report("faceoffpercentages"),
     )
+
+    all_tids = set(summary_map.keys()) | set(rt_map.keys())
     stats_map: dict[str, dict] = {}
-    if data and "data" in data:
-        for t in data["data"]:
-            fields = {
-                "gf_per_game": t.get("goalsForPerGame", 3.0),
-                "ga_per_game": t.get("goalsAgainstPerGame", 3.0),
-                "pp_pct": t.get("powerPlayPct", 0.20),
-                "pk_pct": t.get("penaltyKillPct", 0.80),
-                "fo_pct": t.get("faceoffWinPct", 0.50),
-                "sf_per_game": t.get("shotsForPerGame", 30.0),
-                "sa_per_game": t.get("shotsAgainstPerGame", 30.0),
-                "point_pct": t.get("pointPct", 0.50),
-                "wins": t.get("wins", 0),
-                "losses": t.get("losses", 0),
-                "ot_losses": t.get("otLosses", 0),
-                "goals_for": t.get("goalsFor", 0),
-                "goals_against": t.get("goalsAgainst", 0),
-            }
-            stats_map[str(t.get("teamId"))] = fields
+    for tid in all_tids:
+        s = summary_map.get(tid, {})
+        rt = rt_map.get(tid, {})
+        pp = pp_map.get(tid, {})
+        pk = pk_map.get(tid, {})
+        gfbs = gfbs_map.get(tid, {})
+        fields = {
+            "gf_per_game": s.get("goalsForPerGame", 3.0),
+            "ga_per_game": s.get("goalsAgainstPerGame", 3.0),
+            "pp_pct": s.get("powerPlayPct", 0.20),
+            "pk_pct": s.get("penaltyKillPct", 0.80),
+            "fo_pct": s.get("faceoffWinPct", 0.50),
+            "sf_per_game": s.get("shotsForPerGame", 30.0),
+            "sa_per_game": s.get("shotsAgainstPerGame", 30.0),
+            "point_pct": s.get("pointPct", 0.50),
+            "wins": s.get("wins", 0),
+            "losses": s.get("losses", 0),
+            "ot_losses": s.get("otLosses", 0),
+            "goals_for": s.get("goalsFor", 0),
+            "goals_against": s.get("goalsAgainst", 0),
+            "sat_pct": rt.get("satPct", 0.50),
+            "pp_opp_per_game": pp.get("ppOpportunitiesPerGame", 2.5),
+            "tsh_per_game": pk.get("timesShorthandedPerGame", 3.0),
+            "es_gf_per_game": (gfbs.get("goalsFor5On5", 150) / max(gfbs.get("gamesPlayed", 82), 1)),
+        }
+        stats_map[tid] = fields
     return stats_map
 
 
@@ -200,6 +225,11 @@ async def build_training_data(seasons: list[str]) -> pd.DataFrame:
                     else:
                         default = 3.0 if "gf" in k or "ga" in k or "sf" in k or "sa" in k else 0.20 if "pct" in k else 0.5 if "point" in k else 0
                         row[f"away_{k}"] = s.get(k, default)
+                for extra_key, extra_default in [("sat_pct", 0.50), ("pp_opp_per_game", 2.5), ("tsh_per_game", 3.0), ("es_gf_per_game", 1.8)]:
+                    if prefix == "home":
+                        row[f"home_{extra_key}"] = s.get(extra_key, extra_default)
+                    else:
+                        row[f"away_{extra_key}"] = s.get(extra_key, extra_default)
 
             hps = gs_by_team.get(g["homeTeamId"], {})
             aps = gs_by_team.get(g["visitingTeamId"], {})
@@ -278,13 +308,40 @@ async def build_training_data(seasons: list[str]) -> pd.DataFrame:
             team_dates[tid].add(r["game_date"].strftime("%Y-%m-%d"))
 
     home_b2b, away_b2b = [], []
+    home_rest_cat, away_rest_cat = [], []
     from datetime import timedelta
     for _, r in df.iterrows():
         prev = (r["game_date"] - timedelta(days=1)).strftime("%Y-%m-%d")
-        home_b2b.append(1 if prev in team_dates.get(int(r["home_team_id"]), set()) else 0)
-        away_b2b.append(1 if prev in team_dates.get(int(r["away_team_id"]), set()) else 0)
+        h_b2b = 1 if prev in team_dates.get(int(r["home_team_id"]), set()) else 0
+        a_b2b = 1 if prev in team_dates.get(int(r["away_team_id"]), set()) else 0
+        home_b2b.append(h_b2b)
+        away_b2b.append(a_b2b)
+        # rest category: 0=b2b, 1=1day, 2=2day, 3=3+
+        for tid, is_b2b, lst in [(int(r["home_team_id"]), h_b2b, home_rest_cat),
+                                  (int(r["away_team_id"]), a_b2b, away_rest_cat)]:
+            if is_b2b:
+                lst.append(0)
+            else:
+                prev2 = (r["game_date"] - timedelta(days=2)).strftime("%Y-%m-%d")
+                prev3 = (r["game_date"] - timedelta(days=3)).strftime("%Y-%m-%d")
+                dates = team_dates.get(tid, set())
+                if prev in dates:
+                    lst.append(1)
+                elif prev2 in dates:
+                    lst.append(2)
+                elif prev3 in dates:
+                    lst.append(3)
+                else:
+                    lst.append(4)
     df["home_b2b"] = home_b2b
     df["away_b2b"] = away_b2b
+    df["home_rest_cat"] = home_rest_cat
+    df["away_rest_cat"] = away_rest_cat
+
+    # season phase: day number since Oct 1 of the season year
+    df["day_of_season"] = df.apply(lambda r: (
+        r["game_date"] - pd.Timestamp(year=r["season"] // 10000, month=10, day=1)
+    ).days, axis=1)
 
     logger.info(f"  Total games: {len(df)}")
     return df
@@ -314,6 +371,11 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         "home_goalie_gaa", "away_goalie_gaa",
         "home_top_scorer_ppg", "away_top_scorer_ppg",
         "home_team_avg_ppg", "away_team_avg_ppg",
+        "home_sat_pct", "away_sat_pct",
+        "home_pp_opp_per_game", "away_pp_opp_per_game",
+        "home_tsh_per_game", "away_tsh_per_game",
+        "home_es_gf_per_game", "away_es_gf_per_game",
+        "home_rest_cat", "away_rest_cat", "day_of_season",
         "game_id", "game_date", "home_team_id", "away_team_id",
         "home_score", "away_score", "home_win", "season", "game_type",
     ]
@@ -326,12 +388,14 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         tg["is_home"] = (tg["home_team_id"] == tid).astype(int)
         tg["goals_for"] = np.where(tg["is_home"], tg["home_score"], tg["away_score"])
         tg["goals_against"] = np.where(tg["is_home"], tg["away_score"], tg["home_score"])
+        tg["goal_diff"] = tg["goals_for"] - tg["goals_against"]
         tg["team_win"] = np.where(tg["is_home"], tg["home_win"], 1 - tg["home_win"])
 
         # simple rolling averages
         for w in ROLLING_WINDOWS:
             tg[f"gf_roll{w}"] = tg["goals_for"].rolling(w, min_periods=1).mean().shift(1)
             tg[f"ga_roll{w}"] = tg["goals_against"].rolling(w, min_periods=1).mean().shift(1)
+            tg[f"gd_roll{w}"] = tg["goal_diff"].rolling(w, min_periods=1).mean().shift(1)
             tg[f"win_roll{w}"] = tg["team_win"].rolling(w, min_periods=1).mean().shift(1)
 
         # exponential decay rolling
@@ -339,6 +403,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
             label = str(d).replace(".", "")
             tg[f"gf_decay{label}"] = _exp_weighted_rolling(tg["goals_for"], d).shift(1)
             tg[f"ga_decay{label}"] = _exp_weighted_rolling(tg["goals_against"], d).shift(1)
+            tg[f"gd_decay{label}"] = _exp_weighted_rolling(tg["goal_diff"], d).shift(1)
             tg[f"win_decay{label}"] = _exp_weighted_rolling(tg["team_win"], d).shift(1)
 
         tg["rest_days"] = tg["game_date"].diff().dt.days.fillna(3)
@@ -374,6 +439,8 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
                 fallback = result.get(f"{side}_gf_per_game", 3.0)
             elif stat_type == "ga":
                 fallback = result.get(f"{side}_ga_per_game", 3.0)
+            elif stat_type == "gd":
+                fallback = result.get(f"{side}_gf_per_game", 3.0) - result.get(f"{side}_ga_per_game", 3.0)
             elif stat_type == "win":
                 fallback = result.get(f"{side}_win_pct", 0.5)
             else:
@@ -398,6 +465,11 @@ def _make_features(df: pd.DataFrame) -> list[str]:
         "home_goalie_gaa", "away_goalie_gaa",
         "home_top_scorer_ppg", "away_top_scorer_ppg",
         "home_team_avg_ppg", "away_team_avg_ppg",
+        "home_sat_pct", "away_sat_pct",
+        "home_pp_opp_per_game", "away_pp_opp_per_game",
+        "home_tsh_per_game", "away_tsh_per_game",
+        "home_es_gf_per_game", "away_es_gf_per_game",
+        "home_rest_cat", "away_rest_cat", "day_of_season",
     ]
     for side in ["home", "away"]:
         for sfx in ROLLING_SUFFIXES:
@@ -499,7 +571,7 @@ def load_model() -> Pipeline | None:
 
 
 async def retrain() -> Pipeline | None:
-    seasons = [f"{y}{y+1}" for y in range(2019, 2025)]
+    seasons = [f"{y}{y+1}" for y in range(2021, 2026)]
     logger.info(f"Training on seasons: {seasons}")
     df = await build_training_data(seasons)
     if df.empty:

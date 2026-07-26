@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, date
 from fastapi import APIRouter, Query
 from app.services.nhl import get_gamecenter_landing, get_team_stats, _fetch
@@ -213,9 +212,9 @@ async def _predict_for_game(game_id: int, home_data: dict, away_data: dict,
 
     def _elo(s: dict) -> int:
         w = s.get("wins", 0)
-        l = s.get("losses", 0)
+        losses = s.get("losses", 0)
         ot = s.get("ot_losses", 0)
-        total = w + l + ot
+        total = w + losses + ot
         wp = w / total if total > 0 else 0.5
         return 1500 + int((wp - 0.5) * 200)
 

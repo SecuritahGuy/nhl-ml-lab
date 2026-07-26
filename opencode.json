@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md"],
+  "agent": {
+    "retrain": {
+      "description": "Retrain MLX ensemble on Apple Silicon and export weights to _model.ts",
+      "mode": "subagent"
+    },
+    "deploy": {
+      "description": "Build Next.js site and deploy to Cloudflare Pages",
+      "mode": "subagent"
+    },
+    "add-feature": {
+      "description": "Add a new feature across train.py, predictor.py, and _features.ts",
+      "mode": "subagent"
+    }
+  },
+  "permission": {
+    "bash": {
+      "source .venv/bin/activate && *": "allow",
+      "python3 *": "allow",
+      "cp *": "allow",
+      "npm run build": "allow",
+      "npx wrangler pages deploy *": "ask",
+      "*": "ask"
+    }
+  }
+}

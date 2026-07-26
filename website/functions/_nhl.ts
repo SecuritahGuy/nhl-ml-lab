@@ -26,33 +26,64 @@ export interface TeamStats {
   ot_losses: number;
   goals_for: number;
   goals_against: number;
+  sat_pct: number;
+  pp_opp_per_game: number;
+  tsh_per_game: number;
+  es_gf_per_game: number;
 }
 
-export async function fetchTeamStats(season: string): Promise<Record<number, TeamStats>> {
+async function fetchTeamReport(season: string, report: string): Promise<Record<number, any>> {
   const data = await nhlFetch(
-    `${STATS_API}/team/summary?cayenneExp=seasonId=${season}%20and%20gameTypeId=2&limit=100`
+    `${STATS_API}/team/${report}?cayenneExp=seasonId=${season}%20and%20gameTypeId=2&limit=100`
   );
-  const map: Record<number, TeamStats> = {};
+  const map: Record<number, any> = {};
   if (data?.data) {
     for (const t of data.data) {
       const tid = t.teamId;
       if (!tid) continue;
-      map[tid] = {
-        gf_per_game: t.goalsForPerGame ?? 3.0,
-        ga_per_game: t.goalsAgainstPerGame ?? 3.0,
-        pp_pct: t.powerPlayPct ?? 0.20,
-        pk_pct: t.penaltyKillPct ?? 0.80,
-        fo_pct: t.faceoffWinPct ?? 0.50,
-        sf_per_game: t.shotsForPerGame ?? 30.0,
-        sa_per_game: t.shotsAgainstPerGame ?? 30.0,
-        point_pct: t.pointPct ?? 0.50,
-        wins: t.wins ?? 0,
-        losses: t.losses ?? 0,
-        ot_losses: t.otLosses ?? 0,
-        goals_for: t.goalsFor ?? 0,
-        goals_against: t.goalsAgainst ?? 0,
-      };
+      map[tid] = t;
     }
+  }
+  return map;
+}
+
+export async function fetchTeamStats(season: string): Promise<Record<number, TeamStats>> {
+  const [summaryMap, rtMap, ppMap, pkMap, gfbsMap] = await Promise.all([
+    fetchTeamReport(season, "summary"),
+    fetchTeamReport(season, "realtime"),
+    fetchTeamReport(season, "powerplay"),
+    fetchTeamReport(season, "penaltykill"),
+    fetchTeamReport(season, "goalsforbystrength"),
+  ]);
+
+  const allTids = new Set([...Object.keys(summaryMap), ...Object.keys(rtMap)].map(Number));
+  const map: Record<number, TeamStats> = {};
+  for (const tid of allTids) {
+    const s = summaryMap[tid] ?? {};
+    const rt = rtMap[tid] ?? {};
+    const pp = ppMap[tid] ?? {};
+    const pk = pkMap[tid] ?? {};
+    const gfbs = gfbsMap[tid] ?? {};
+    const gp = Math.max(s.gamesPlayed ?? rt.gamesPlayed ?? 82, 1);
+    map[tid] = {
+      gf_per_game: s.goalsForPerGame ?? 3.0,
+      ga_per_game: s.goalsAgainstPerGame ?? 3.0,
+      pp_pct: s.powerPlayPct ?? 0.20,
+      pk_pct: s.penaltyKillPct ?? 0.80,
+      fo_pct: s.faceoffWinPct ?? 0.50,
+      sf_per_game: s.shotsForPerGame ?? 30.0,
+      sa_per_game: s.shotsAgainstPerGame ?? 30.0,
+      point_pct: s.pointPct ?? 0.50,
+      wins: s.wins ?? 0,
+      losses: s.losses ?? 0,
+      ot_losses: s.otLosses ?? 0,
+      goals_for: s.goalsFor ?? 0,
+      goals_against: s.goalsAgainst ?? 0,
+      sat_pct: rt.satPct ?? 0.50,
+      pp_opp_per_game: pp.ppOpportunitiesPerGame ?? 2.5,
+      tsh_per_game: pk.timesShorthandedPerGame ?? 3.0,
+      es_gf_per_game: (gfbs.goalsFor5On5 ?? 150) / gp,
+    };
   }
   return map;
 }

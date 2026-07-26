@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.services.nhl import get_gamecenter_landing, get_gamecenter_boxscore
+from app.services.nhl import get_gamecenter_landing
 
 router = APIRouter()
 

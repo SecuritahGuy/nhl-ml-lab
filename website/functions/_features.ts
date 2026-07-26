@@ -1,9 +1,38 @@
+// Feature count: 52 base + 29 rolling×2 = 110 features
 import { TeamStats, GameInfo, fetchTeamStats, fetchSeasonGames, fetchGoalieStats, fetchSkaterStats } from "./_nhl";
 import { TEAM_ABBREV_TO_ID } from "./_locations";
 import { travelDistanceMiles, tzCrossed, altitudeAdvantageFt, highAltitudeHome } from "./_locations";
 
 const ROLLING_WINDOWS = [3, 5, 10, 20];
 const DECAY_FACTORS = [0.7, 0.8, 0.9];
+
+function checkRestCat(teamId: number, gameDate: Date, games: GameInfo[]): number {
+  const dates: string[] = [];
+  for (const g of games) {
+    if (g.gameStateId !== 7) continue;
+    if (g.gameType !== 2 && g.gameType !== 3) continue;
+    if (g.homeTeamId === teamId || g.visitingTeamId === teamId) {
+      dates.push(g.gameDate);
+    }
+  }
+  if (dates.length === 0) return 4;
+  const gdStr = gameDate.toISOString().slice(0, 10);
+  const prev = new Date(gameDate);
+  for (let d = 1; d <= 3; d++) {
+    prev.setDate(gameDate.getDate() - d);
+    const ps = prev.toISOString().slice(0, 10);
+    if (dates.includes(ps)) return d - 1;
+    prev.setDate(gameDate.getDate());
+  }
+  return 4;
+}
+
+function dayOfSeason(gameDate: string, season: string): number {
+  const seasonYear = parseInt(season.slice(0, 4));
+  const seasonStart = new Date(seasonYear, 9, 1); // Oct 1
+  const gd = new Date(gameDate);
+  return Math.round((gd.getTime() - seasonStart.getTime()) / (1000 * 60 * 60 * 24));
+}
 
 export async function buildFeaturesForGame(
   homeTid: number,
@@ -28,6 +57,9 @@ export async function buildFeaturesForGame(
 
   const homeB2b = checkBackToBack(homeTid, gd, games);
   const awayB2b = checkBackToBack(awayTid, gd, games);
+  const homeRc = checkRestCat(homeTid, gd, games);
+  const awayRc = checkRestCat(awayTid, gd, games);
+  const dos = dayOfSeason(gameDate, season);
 
   const goalieMap = buildGoalieMap(goalieRaw);
   const skaterMap = buildSkaterMap(skaterRaw);
@@ -37,7 +69,7 @@ export async function buildFeaturesForGame(
   const hsk = skaterMap[homeTid] ?? { top_scorer_ppg: 0.5, team_avg_ppg: 0.3 };
   const ask = skaterMap[awayTid] ?? { top_scorer_ppg: 0.5, team_avg_ppg: 0.3 };
 
-  return buildFeatureVector(hs, aws, homeRoll, awayRoll, homeB2b, awayB2b, homeTid, awayTid, hg, ag, hsk, ask);
+  return buildFeatureVector(hs, aws, homeRoll, awayRoll, homeB2b, awayB2b, homeRc, awayRc, dos, homeTid, awayTid, hg, ag, hsk, ask);
 }
 
 function getDefaultStats(): TeamStats {
@@ -45,6 +77,7 @@ function getDefaultStats(): TeamStats {
     gf_per_game: 3.0, ga_per_game: 3.0, pp_pct: 0.20, pk_pct: 0.80,
     fo_pct: 0.50, sf_per_game: 30.0, sa_per_game: 30.0, point_pct: 0.50,
     wins: 0, losses: 0, ot_losses: 0, goals_for: 0, goals_against: 0,
+    sat_pct: 0.50, pp_opp_per_game: 2.5, tsh_per_game: 3.0, es_gf_per_game: 1.8,
   };
 }
 
@@ -64,6 +97,7 @@ interface PriorGame {
   date: Date;
   gf: number;
   ga: number;
+  gd: number;
   win: number;
 }
 
@@ -80,7 +114,7 @@ function computeRollingForTeam(teamId: number, gameDate: Date, games: GameInfo[]
       const gf = g.homeTeamId === teamId ? g.homeScore : g.visitingScore;
       const ga = g.homeTeamId === teamId ? g.visitingScore : g.homeScore;
       const win = gf > ga ? 1 : 0;
-      prior.push({ date: gd, gf, ga, win });
+      prior.push({ date: gd, gf, ga, gd: gf - ga, win });
     }
   }
 
@@ -98,8 +132,8 @@ function computeRollingForTeam(teamId: number, gameDate: Date, games: GameInfo[]
     return values.reduce((sum, v, i) => sum + v * weights[i], 0) / totalWeight;
   }
 
-  for (const [statKey, key] of [["gf", "gf"], ["ga", "ga"], ["win", "win"]] as const) {
-    const vals = prior.map(r => statKey === "gf" ? r.gf : statKey === "ga" ? r.ga : r.win);
+  for (const [statKey, key] of [["gf", "gf"], ["ga", "ga"], ["gd", "gd"], ["win", "win"]] as const) {
+    const vals = prior.map(r => statKey === "gf" ? r.gf : statKey === "ga" ? r.ga : statKey === "gd" ? r.gd : r.win);
 
     for (const w of ROLLING_WINDOWS) {
       const window = vals.slice(0, w);
@@ -180,6 +214,8 @@ function buildFeatureVector(
   hs: TeamStats, aws: TeamStats,
   homeRoll: Record<string, number>, awayRoll: Record<string, number>,
   homeB2b: number, awayB2b: number,
+  homeRc: number, awayRc: number,
+  dos: number,
   homeTid: number, awayTid: number,
   hg: { goalie_sv_pct: number; goalie_gaa: number },
   ag: { goalie_sv_pct: number; goalie_gaa: number },
@@ -226,17 +262,35 @@ function buildFeatureVector(
     hg.goalie_gaa, ag.goalie_gaa,
     hsk.top_scorer_ppg, ask.top_scorer_ppg,
     hsk.team_avg_ppg, ask.team_avg_ppg,
+    hs.sat_pct, aws.sat_pct,
+    hs.pp_opp_per_game, aws.pp_opp_per_game,
+    hs.tsh_per_game, aws.tsh_per_game,
+    hs.es_gf_per_game, aws.es_gf_per_game,
+    homeRc, awayRc, dos,
   ];
 
   function buildRollingArray(stats: TeamStats, roll: Record<string, number>, wp: number): number[] {
     const out: number[] = [];
     const allPrefixes: string[] = [];
-    for (const w of ROLLING_WINDOWS) {
-      allPrefixes.push(`gf_roll${w}`, `ga_roll${w}`, `win_roll${w}`);
+    for (const w of ROLLING_WINDOWS) allPrefixes.push(`gf_roll${w}`);
+    for (const w of ROLLING_WINDOWS) allPrefixes.push(`ga_roll${w}`);
+    for (const w of ROLLING_WINDOWS) allPrefixes.push(`gd_roll${w}`);
+    for (const w of ROLLING_WINDOWS) allPrefixes.push(`win_roll${w}`);
+    for (const d of DECAY_FACTORS) {
+      const label = String(d).replace(".", "");
+      allPrefixes.push(`gf_decay${label}`);
     }
     for (const d of DECAY_FACTORS) {
       const label = String(d).replace(".", "");
-      allPrefixes.push(`gf_decay${label}`, `ga_decay${label}`, `win_decay${label}`);
+      allPrefixes.push(`ga_decay${label}`);
+    }
+    for (const d of DECAY_FACTORS) {
+      const label = String(d).replace(".", "");
+      allPrefixes.push(`gd_decay${label}`);
+    }
+    for (const d of DECAY_FACTORS) {
+      const label = String(d).replace(".", "");
+      allPrefixes.push(`win_decay${label}`);
     }
     allPrefixes.push("rest_days");
 
@@ -252,6 +306,7 @@ function buildFeatureVector(
       }
       if (sfx.startsWith("gf_")) out.push(stats.gf_per_game);
       else if (sfx.startsWith("ga_")) out.push(stats.ga_per_game);
+      else if (sfx.startsWith("gd_")) out.push(stats.gf_per_game - stats.ga_per_game);
       else out.push(wp);
     }
     return out;
