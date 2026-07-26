@@ -16,6 +16,18 @@ import xgboost as xgb
 logger = logging.getLogger(__name__)
 
 MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "models"
+
+# Team abbreviation -> ID mapping (subset of active teams from locations.py)
+TEAM_ABBREV_TO_ID = {
+    "NJD": 1, "NYI": 2, "NYR": 3, "PHI": 4, "PIT": 5,
+    "BOS": 6, "BUF": 7, "MTL": 8, "OTT": 9, "TOR": 10,
+    "CAR": 12, "FLA": 13, "TBL": 14, "WSH": 15,
+    "CHI": 16, "DET": 17, "NSH": 18, "STL": 19,
+    "CGY": 20, "COL": 21, "EDM": 22, "VAN": 23,
+    "ANA": 24, "DAL": 25, "LAK": 26,
+    "SJS": 28, "CBJ": 29, "MIN": 30,
+    "WPG": 52, "VGK": 54, "SEA": 55, "UTA": 59,
+}
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 STATS_API = "https://api.nhle.com/stats/rest/en"
@@ -81,12 +93,82 @@ async def fetch_team_stats(season: str) -> dict[str, dict]:
     return stats_map
 
 
+async def fetch_goalie_stats_by_team(season: str) -> dict[int, dict]:
+    data = await _fetch(
+        f"{STATS_API}/goalie/summary?cayenneExp=seasonId={season}%20and%20gameTypeId=2&limit=200"
+    )
+    team_goalies: dict[int, list[dict]] = {}
+    if data and "data" in data:
+        for g in data["data"]:
+            teams = g.get("teamAbbrevs", "").split(",")
+            for team_abbrev in teams:
+                team_abbrev = team_abbrev.strip()
+                tid = TEAM_ABBREV_TO_ID.get(team_abbrev)
+                if not tid:
+                    continue
+                team_goalies.setdefault(tid, []).append({
+                    "gp": g.get("gamesPlayed", 0),
+                    "gs": g.get("gamesStarted", 0),
+                    "sv_pct": g.get("savePct", 0.0),
+                    "gaa": g.get("goalsAgainstAverage", 3.0),
+                })
+    result: dict[int, dict] = {}
+    for tid, goalies in team_goalies.items():
+        eligible = [g for g in goalies if g["gs"] >= 10]
+        if not eligible:
+            result[tid] = {"goalie_sv_pct": 0.900, "goalie_gaa": 3.0}
+            continue
+        starter = max(eligible, key=lambda g: g["gs"])
+        result[tid] = {
+            "goalie_sv_pct": starter["sv_pct"],
+            "goalie_gaa": starter["gaa"],
+        }
+    return result
+
+
+async def fetch_skater_stats_by_team(season: str) -> dict[int, dict]:
+    data = await _fetch(
+        f"{STATS_API}/skater/summary?cayenneExp=seasonId={season}%20and%20gameTypeId=2&limit=1000"
+    )
+    team_skaters: dict[int, list[dict]] = {}
+    if data and "data" in data:
+        for s in data["data"]:
+            teams = s.get("teamAbbrevs", "").split(",")
+            for team_abbrev in teams:
+                team_abbrev = team_abbrev.strip()
+                tid = TEAM_ABBREV_TO_ID.get(team_abbrev)
+                if not tid:
+                    continue
+                team_skaters.setdefault(tid, []).append({
+                    "gp": s.get("gamesPlayed", 0),
+                    "ppg": s.get("pointsPerGame", 0.0),
+                    "goals": s.get("goals", 0),
+                    "points": s.get("points", 0),
+                })
+    result: dict[int, dict] = {}
+    for tid, skaters in team_skaters.items():
+        eligible = [s for s in skaters if s["gp"] >= 10]
+        if not eligible:
+            result[tid] = {"top_scorer_ppg": 0.5, "team_avg_ppg": 0.3}
+            continue
+        best = max(eligible, key=lambda s: s["ppg"])
+        total_p = sum(s["points"] for s in eligible)
+        total_gp = sum(s["gp"] for s in eligible)
+        result[tid] = {
+            "top_scorer_ppg": best["ppg"],
+            "team_avg_ppg": total_p / total_gp if total_gp > 0 else 0.3,
+        }
+    return result
+
+
 async def build_training_data(seasons: list[str]) -> pd.DataFrame:
     rows = []
     for season in seasons:
         games = await fetch_games(season)
         logger.info(f"  Season {season}: {len(games)} games fetched")
         ts = await fetch_team_stats(season)
+        gs_by_team = await fetch_goalie_stats_by_team(season)
+        sk_by_team = await fetch_skater_stats_by_team(season)
         for g in games:
             if g.get("gameStateId") != 7:
                 continue
@@ -118,6 +200,19 @@ async def build_training_data(seasons: list[str]) -> pd.DataFrame:
                     else:
                         default = 3.0 if "gf" in k or "ga" in k or "sf" in k or "sa" in k else 0.20 if "pct" in k else 0.5 if "point" in k else 0
                         row[f"away_{k}"] = s.get(k, default)
+
+            hps = gs_by_team.get(g["homeTeamId"], {})
+            aps = gs_by_team.get(g["visitingTeamId"], {})
+            row["home_goalie_sv_pct"] = hps.get("goalie_sv_pct", 0.900)
+            row["away_goalie_sv_pct"] = aps.get("goalie_sv_pct", 0.900)
+            row["home_goalie_gaa"] = hps.get("goalie_gaa", 3.0)
+            row["away_goalie_gaa"] = aps.get("goalie_gaa", 3.0)
+            hsk = sk_by_team.get(g["homeTeamId"], {})
+            ask = sk_by_team.get(g["visitingTeamId"], {})
+            row["home_top_scorer_ppg"] = hsk.get("top_scorer_ppg", 0.5)
+            row["away_top_scorer_ppg"] = ask.get("top_scorer_ppg", 0.5)
+            row["home_team_avg_ppg"] = hsk.get("team_avg_ppg", 0.3)
+            row["away_team_avg_ppg"] = ask.get("team_avg_ppg", 0.3)
 
             home_w = hs.get("wins", 0)
             home_l = hs.get("losses", 0)
@@ -215,6 +310,10 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         "gf_diff", "ga_diff", "net_diff", "st_diff", "shot_diff",
         "corsi_diff", "fo_diff", "pp_diff", "pk_diff",
         "home_b2b", "away_b2b", "travel_miles", "tz_crossed", "alt_advantage", "high_alt_home",
+        "home_goalie_sv_pct", "away_goalie_sv_pct",
+        "home_goalie_gaa", "away_goalie_gaa",
+        "home_top_scorer_ppg", "away_top_scorer_ppg",
+        "home_team_avg_ppg", "away_team_avg_ppg",
         "game_id", "game_date", "home_team_id", "away_team_id",
         "home_score", "away_score", "home_win", "season", "game_type",
     ]
@@ -295,6 +394,10 @@ def _make_features(df: pd.DataFrame) -> list[str]:
         "corsi_diff", "fo_diff", "pp_diff", "pk_diff",
         "home_b2b", "away_b2b",
         "travel_miles", "tz_crossed", "alt_advantage", "high_alt_home",
+        "home_goalie_sv_pct", "away_goalie_sv_pct",
+        "home_goalie_gaa", "away_goalie_gaa",
+        "home_top_scorer_ppg", "away_top_scorer_ppg",
+        "home_team_avg_ppg", "away_team_avg_ppg",
     ]
     for side in ["home", "away"]:
         for sfx in ROLLING_SUFFIXES:

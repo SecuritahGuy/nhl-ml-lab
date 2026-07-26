@@ -7,10 +7,23 @@ from app.models.predictor import predict_game
 ROLLING_WINDOWS = [3, 5, 10, 20]
 DECAY_FACTORS = [0.7, 0.8, 0.9]
 
+TEAM_ABBREV_TO_ID = {
+    "NJD": 1, "NYI": 2, "NYR": 3, "PHI": 4, "PIT": 5,
+    "BOS": 6, "BUF": 7, "MTL": 8, "OTT": 9, "TOR": 10,
+    "CAR": 12, "FLA": 13, "TBL": 14, "WSH": 15,
+    "CHI": 16, "DET": 17, "NSH": 18, "STL": 19,
+    "CGY": 20, "COL": 21, "EDM": 22, "VAN": 23,
+    "ANA": 24, "DAL": 25, "LAK": 26,
+    "SJS": 28, "CBJ": 29, "MIN": 30,
+    "WPG": 52, "VGK": 54, "SEA": 55, "UTA": 59,
+}
+
 router = APIRouter()
 
 _stats_cache: dict[str, dict[int, dict]] = {}
 _games_cache: dict[str, list[dict]] = {}
+_goalie_cache: dict[str, dict[int, dict]] = {}
+_skater_cache: dict[str, dict[int, dict]] = {}
 
 
 async def _get_team_stats_map(season: str) -> dict[int, dict]:
@@ -49,6 +62,73 @@ async def _get_season_games(season: str) -> list[dict]:
     games = data.get("data", []) if data else []
     _games_cache[season] = games
     return games
+
+
+async def _get_goalie_stats_map(season: str) -> dict[int, dict]:
+    if season in _goalie_cache:
+        return _goalie_cache[season]
+    url = f"https://api.nhle.com/stats/rest/en/goalie/summary?cayenneExp=seasonId={season}%20and%20gameTypeId=2&limit=200"
+    data = await _fetch(url)
+    team_goalies: dict[int, list[dict]] = {}
+    if data and "data" in data:
+        for g in data["data"]:
+            teams = g.get("teamAbbrevs", "").split(",")
+            for team_abbrev in teams:
+                team_abbrev = team_abbrev.strip()
+                tid = TEAM_ABBREV_TO_ID.get(team_abbrev)
+                if not tid:
+                    continue
+                team_goalies.setdefault(tid, []).append({
+                    "gs": g.get("gamesStarted", 0),
+                    "sv_pct": g.get("savePct", 0.0),
+                    "gaa": g.get("goalsAgainstAverage", 3.0),
+                })
+    result: dict[int, dict] = {}
+    for tid, goalies in team_goalies.items():
+        eligible = [g for g in goalies if g["gs"] >= 10]
+        if not eligible:
+            result[tid] = {"goalie_sv_pct": 0.900, "goalie_gaa": 3.0}
+            continue
+        starter = max(eligible, key=lambda g: g["gs"])
+        result[tid] = {"goalie_sv_pct": starter["sv_pct"], "goalie_gaa": starter["gaa"]}
+    _goalie_cache[season] = result
+    return result
+
+
+async def _get_skater_stats_map(season: str) -> dict[int, dict]:
+    if season in _skater_cache:
+        return _skater_cache[season]
+    url = f"https://api.nhle.com/stats/rest/en/skater/summary?cayenneExp=seasonId={season}%20and%20gameTypeId=2&limit=1000"
+    data = await _fetch(url)
+    team_skaters: dict[int, list[dict]] = {}
+    if data and "data" in data:
+        for s in data["data"]:
+            teams = s.get("teamAbbrevs", "").split(",")
+            for team_abbrev in teams:
+                team_abbrev = team_abbrev.strip()
+                tid = TEAM_ABBREV_TO_ID.get(team_abbrev)
+                if not tid:
+                    continue
+                team_skaters.setdefault(tid, []).append({
+                    "gp": s.get("gamesPlayed", 0),
+                    "ppg": s.get("pointsPerGame", 0.0),
+                    "points": s.get("points", 0),
+                })
+    result: dict[int, dict] = {}
+    for tid, skaters in team_skaters.items():
+        eligible = [s for s in skaters if s["gp"] >= 10]
+        if not eligible:
+            result[tid] = {"top_scorer_ppg": 0.5, "team_avg_ppg": 0.3}
+            continue
+        best = max(eligible, key=lambda s: s["ppg"])
+        total_p = sum(s["points"] for s in eligible)
+        total_gp = sum(s["gp"] for s in eligible)
+        result[tid] = {
+            "top_scorer_ppg": best["ppg"],
+            "team_avg_ppg": total_p / total_gp if total_gp > 0 else 0.3,
+        }
+    _skater_cache[season] = result
+    return result
 
 
 def _compute_rolling_for_team(team_id: int, game_date: str, games: list[dict]) -> dict:
@@ -110,9 +190,26 @@ async def _predict_for_game(game_id: int, home_data: dict, away_data: dict,
     away_tid = away_data.get("id")
 
     stats_map = await _get_team_stats_map(season)
+    goalie_map = await _get_goalie_stats_map(season)
+    skater_map = await _get_skater_stats_map(season)
 
     hs = dict(stats_map.get(home_tid, {}))
     aws = dict(stats_map.get(away_tid, {}))
+
+    # Player-level features
+    hg = goalie_map.get(home_tid, {})
+    ag = goalie_map.get(away_tid, {})
+    hs["goalie_sv_pct"] = hg.get("goalie_sv_pct", 0.900)
+    aws["goalie_sv_pct"] = ag.get("goalie_sv_pct", 0.900)
+    hs["goalie_gaa"] = hg.get("goalie_gaa", 3.0)
+    aws["goalie_gaa"] = ag.get("goalie_gaa", 3.0)
+
+    hsk = skater_map.get(home_tid, {})
+    ask = skater_map.get(away_tid, {})
+    hs["top_scorer_ppg"] = hsk.get("top_scorer_ppg", 0.5)
+    aws["top_scorer_ppg"] = ask.get("top_scorer_ppg", 0.5)
+    hs["team_avg_ppg"] = hsk.get("team_avg_ppg", 0.3)
+    aws["team_avg_ppg"] = ask.get("team_avg_ppg", 0.3)
 
     def _elo(s: dict) -> int:
         w = s.get("wins", 0)

@@ -1,5 +1,16 @@
 import math
 
+TEAM_ABBREV_TO_ID = {
+    "NJD": 1, "NYI": 2, "NYR": 3, "PHI": 4, "PIT": 5,
+    "BOS": 6, "BUF": 7, "MTL": 8, "OTT": 9, "TOR": 10,
+    "CAR": 12, "FLA": 13, "TBL": 14, "WSH": 15,
+    "CHI": 16, "DET": 17, "NSH": 18, "STL": 19,
+    "CGY": 20, "COL": 21, "EDM": 22, "VAN": 23,
+    "ANA": 24, "DAL": 25, "LAK": 26,
+    "SJS": 28, "CBJ": 29, "MIN": 30,
+    "WPG": 52, "VGK": 54, "SEA": 55, "UTA": 59,
+}
+
 TEAM_LOCATIONS = {
     1: {"city": "Newark", "tz": "America/New_York", "utc_offset": -5, "lat": 40.7336, "lon": -74.1711, "alt_ft": 0},
     2: {"city": "Elmont", "tz": "America/New_York", "utc_offset": -5, "lat": 40.7117, "lon": -73.7269, "alt_ft": 0},

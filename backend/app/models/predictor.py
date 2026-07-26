@@ -164,12 +164,26 @@ def predict_game(home_team: str, away_team: str,
     alt_advantage = _safe(hs, "alt_advantage", 0)
     high_alt_home = _safe(hs, "high_alt_home", 0)
 
+    # player-based features
+    h_goalie_sv = _safe(hs, "goalie_sv_pct", 0.900)
+    a_goalie_sv = _safe(aws, "goalie_sv_pct", 0.900)
+    h_goalie_gaa = _safe(hs, "goalie_gaa", 3.0)
+    a_goalie_gaa = _safe(aws, "goalie_gaa", 3.0)
+    h_top_ppg = _safe(hs, "top_scorer_ppg", 0.5)
+    a_top_ppg = _safe(aws, "top_scorer_ppg", 0.5)
+    h_avg_ppg = _safe(hs, "team_avg_ppg", 0.3)
+    a_avg_ppg = _safe(aws, "team_avg_ppg", 0.3)
+
     features = [h_gf, h_ga, h_pp, h_pk, h_fo, h_sf, h_sa, h_pt,
                 a_gf, a_ga, a_pp, a_pk, a_fo, a_sf, a_sa, a_pt,
                 h_wp, a_wp,
                 gf_diff, ga_diff, net_diff, st_diff, shot_diff,
                 corsi_diff, fo_diff, pp_diff, pk_diff,
-                home_b2b, away_b2b, travel_miles, tz_crossed_, alt_advantage, high_alt_home] + h_rolling + a_rolling
+                home_b2b, away_b2b, travel_miles, tz_crossed_, alt_advantage, high_alt_home,
+                h_goalie_sv, a_goalie_sv,
+                h_goalie_gaa, a_goalie_gaa,
+                h_top_ppg, a_top_ppg,
+                h_avg_ppg, a_avg_ppg] + h_rolling + a_rolling
 
     ml = predict(features)
     if ml is not None:
