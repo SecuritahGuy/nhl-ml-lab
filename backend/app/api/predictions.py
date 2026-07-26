@@ -1,15 +1,144 @@
+import asyncio
+from datetime import datetime, date
 from fastapi import APIRouter, Query
-from app.services.nhl import get_standings, get_gamecenter_landing
+from app.services.nhl import get_gamecenter_landing, get_team_stats, _fetch
 from app.models.predictor import predict_game
+
+ROLLING_WINDOWS = [3, 5, 10, 20]
+DECAY_FACTORS = [0.7, 0.8, 0.9]
 
 router = APIRouter()
 
-SEASON_TEAMS = [
-    "ANA", "BOS", "BUF", "CAR", "CBJ", "CGY", "CHI", "COL", "DAL", "DET",
-    "EDM", "FLA", "LAK", "MIN", "MTL", "NJD", "NSH", "NYI", "NYR", "OTT",
-    "PHI", "PIT", "SEA", "SJS", "STL", "TBL", "TOR", "VAN", "VGK", "WPG",
-    "WSH", "UTA",
-]
+_stats_cache: dict[str, dict[int, dict]] = {}
+_games_cache: dict[str, list[dict]] = {}
+
+
+async def _get_team_stats_map(season: str) -> dict[int, dict]:
+    if season in _stats_cache:
+        return _stats_cache[season]
+    raw = await get_team_stats(season)
+    mapping: dict[int, dict] = {}
+    if raw:
+        for t in raw:
+            tid = t.get("teamId")
+            if tid:
+                mapping[tid] = {
+                    "gf_per_game": t.get("goalsForPerGame", 3.0),
+                    "ga_per_game": t.get("goalsAgainstPerGame", 3.0),
+                    "pp_pct": t.get("powerPlayPct", 0.20),
+                    "pk_pct": t.get("penaltyKillPct", 0.80),
+                    "fo_pct": t.get("faceoffWinPct", 0.50),
+                    "sf_per_game": t.get("shotsForPerGame", 30.0),
+                    "sa_per_game": t.get("shotsAgainstPerGame", 30.0),
+                    "point_pct": t.get("pointPct", 0.50),
+                    "wins": t.get("wins", 0),
+                    "losses": t.get("losses", 0),
+                    "ot_losses": t.get("otLosses", 0),
+                    "goals_for": t.get("goalsFor", 0),
+                    "goals_against": t.get("goalsAgainst", 0),
+                }
+    _stats_cache[season] = mapping
+    return mapping
+
+
+async def _get_season_games(season: str) -> list[dict]:
+    if season in _games_cache:
+        return _games_cache[season]
+    url = f"https://api.nhle.com/stats/rest/en/game?cayenneExp=season={season}"
+    data = await _fetch(url)
+    games = data.get("data", []) if data else []
+    _games_cache[season] = games
+    return games
+
+
+def _compute_rolling_for_team(team_id: int, game_date: str, games: list[dict]) -> dict:
+    gd = datetime.strptime(game_date, "%Y-%m-%d").date() if game_date else date.today()
+    prior = []
+    for g in games:
+        if g.get("gameStateId") != 7:
+            continue
+        gt = g.get("gameType")
+        if gt not in (2, 3):
+            continue
+        try:
+            gd2 = datetime.strptime(g["gameDate"], "%Y-%m-%d").date()
+        except (ValueError, KeyError):
+            continue
+        if gd2 >= gd:
+            continue
+        if g.get("homeTeamId") == team_id or g.get("visitingTeamId") == team_id:
+            gf = g["homeScore"] if g["homeTeamId"] == team_id else g["visitingScore"]
+            ga = g["visitingScore"] if g["homeTeamId"] == team_id else g["homeScore"]
+            win = 1 if gf > ga else 0
+            prior.append({"date": gd2, "gf": gf, "ga": ga, "win": win})
+
+    prior.sort(key=lambda x: x["date"], reverse=True)
+
+    if not prior:
+        return {}
+
+    result: dict = {}
+
+    def _exp_weighted(values, decay):
+        if not values:
+            return 0
+        n = len(values)
+        weights = [decay ** i for i in range(n)]
+        return sum(v * w for v, w in zip(values, weights)) / sum(weights)
+
+    for stat, key in [("gf", "gf"), ("ga", "ga"), ("win", "win")]:
+        vals = [r[stat] if stat != "win" else r["win"] for r in prior]
+
+        for w in ROLLING_WINDOWS:
+            window = vals[:w]
+            result[f"{key}_roll{w}"] = sum(window) / len(window)
+
+        for d in DECAY_FACTORS:
+            label = str(d).replace(".", "")
+            result[f"{key}_decay{label}"] = _exp_weighted(vals, d)
+
+    result["rest_days"] = (gd - prior[0]["date"]).days
+
+    return result
+
+
+async def _predict_for_game(game_id: int, home_data: dict, away_data: dict,
+                            season: str = "20242025", game_date: str | None = None):
+    home_abbrev = home_data.get("abbrev", "")
+    away_abbrev = away_data.get("abbrev", "")
+    home_tid = home_data.get("id")
+    away_tid = away_data.get("id")
+
+    stats_map = await _get_team_stats_map(season)
+
+    hs = dict(stats_map.get(home_tid, {}))
+    aws = dict(stats_map.get(away_tid, {}))
+
+    def _elo(s: dict) -> int:
+        w = s.get("wins", 0)
+        l = s.get("losses", 0)
+        ot = s.get("ot_losses", 0)
+        total = w + l + ot
+        wp = w / total if total > 0 else 0.5
+        return 1500 + int((wp - 0.5) * 200)
+
+    home_elo = _elo(hs)
+    away_elo = _elo(aws)
+
+    if game_date and home_tid and away_tid:
+        season_games = await _get_season_games(season)
+        home_roll = _compute_rolling_for_team(home_tid, game_date, season_games)
+        away_roll = _compute_rolling_for_team(away_tid, game_date, season_games)
+        hs.update(home_roll)
+        aws.update(away_roll)
+
+    result = predict_game(
+        home_team=home_abbrev,
+        away_team=away_abbrev,
+        home_stats={**hs, "elo": home_elo},
+        away_stats={**aws, "elo": away_elo},
+    )
+    return result
 
 
 @router.get("/{game_id}")
@@ -20,38 +149,19 @@ async def get_prediction(game_id: int):
 
     home = data.get("homeTeam", {})
     away = data.get("awayTeam", {})
+    season = str(data.get("season", "20242025"))
+    game_date = data.get("gameDate", "")
 
-    home_abbrev = home.get("abbrev", "")
-    away_abbrev = away.get("abbrev", "")
-    home_record = home.get("record", "0-0-0")
-    away_record = away.get("record", "0-0-0")
-
-    def parse_record(r: str):
-        parts = r.split("-")
-        return {"wins": int(parts[0]), "losses": int(parts[1]), "ot_losses": int(parts[2])} if len(parts) == 3 else {"wins": 0, "losses": 0, "ot_losses": 0}
-
-    hr = parse_record(home_record)
-    ar = parse_record(away_record)
-    total_h = hr["wins"] + hr["losses"] + hr["ot_losses"]
-    total_a = ar["wins"] + ar["losses"] + ar["ot_losses"]
-    home_win_pct = hr["wins"] / total_h if total_h > 0 else 0.5
-    away_win_pct = ar["wins"] / total_a if total_a > 0 else 0.5
-
-    result = predict_game(
-        home_team=home_abbrev,
-        away_team=away_abbrev,
-        home_stats={"avgGoalsFor": 3.2, "avgGoalsAgainst": 2.8, "elo": 1500 + int((home_win_pct - 0.5) * 200)},
-        away_stats={"avgGoalsFor": 3.0, "avgGoalsAgainst": 3.0, "elo": 1500 + int((away_win_pct - 0.5) * 200)},
-        home_recent=[home_win_pct * 6] * 5,
-        away_recent=[away_win_pct * 6] * 5,
-    )
+    result = await _predict_for_game(game_id, home, away, season, game_date)
 
     return {
         "game_id": game_id,
         "home_team": home.get("placeName", {}).get("default", ""),
         "away_team": away.get("placeName", {}).get("default", ""),
-        "home_team_abbrev": home_abbrev,
-        "away_team_abbrev": away_abbrev,
+        "home_team_abbrev": home.get("abbrev", ""),
+        "away_team_abbrev": away.get("abbrev", ""),
+        "season": season,
+        "game_state": data.get("gameState", ""),
         **result,
     }
 
@@ -68,28 +178,29 @@ async def get_bulk_predictions(date: str | None = Query(default=None)):
     for g in games:
         if g.get("game_state") in ("OFF", "FINAL"):
             continue
-        home_abbrev = g.get("home_team", {}).get("abbrev", "")
-        away_abbrev = g.get("away_team", {}).get("abbrev", "")
+        home = g.get("home_team", {})
+        away = g.get("away_team", {})
+        home_abbrev = home.get("abbrev", "")
+        away_abbrev = away.get("abbrev", "")
         if not home_abbrev or not away_abbrev:
             continue
 
-        result = predict_game(
-            home_team=home_abbrev,
-            away_team=away_abbrev,
-            home_stats={"avgGoalsFor": 3.2, "avgGoalsAgainst": 2.8},
-            away_stats={"avgGoalsFor": 3.0, "avgGoalsAgainst": 3.0},
-            home_recent=[3.2] * 5,
-            away_recent=[3.0] * 5,
-        )
+        season = str(g.get("season", "20242025"))
+        home_data = {"abbrev": home_abbrev, "id": home.get("id", 0)}
+        away_data = {"abbrev": away_abbrev, "id": away.get("id", 0)}
+        game_date = g.get("game_date", "")
+
+        result = await _predict_for_game(int(g["id"]), home_data, away_data, season, game_date)
 
         predictions.append({
             "game_id": g["id"],
-            "home_team": g.get("home_team", {}).get("place_name", ""),
-            "away_team": g.get("away_team", {}).get("place_name", ""),
+            "home_team": home.get("place_name", ""),
+            "away_team": away.get("place_name", ""),
             "home_team_abbrev": home_abbrev,
             "away_team_abbrev": away_abbrev,
-            "game_date": g.get("game_date"),
+            "game_date": game_date,
             "game_state": g.get("game_state"),
+            "season": season,
             **result,
         })
 

@@ -1,7 +1,7 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import schedule, rosters, lineups, predictions, teams, standings
+from app.api import schedule, rosters, lineups, predictions, teams, standings, stats
 
 logging.basicConfig(level=logging.INFO)
 
@@ -23,6 +23,7 @@ app.include_router(lineups.router, prefix="/api/lineups", tags=["lineups"])
 app.include_router(predictions.router, prefix="/api/predictions", tags=["predictions"])
 app.include_router(teams.router, prefix="/api/teams", tags=["teams"])
 app.include_router(standings.router, prefix="/api/standings", tags=["standings"])
+app.include_router(stats.router, prefix="/api/stats", tags=["stats"])
 
 
 @app.get("/")

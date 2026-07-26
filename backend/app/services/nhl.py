@@ -89,6 +89,10 @@ async def get_gamecenter_landing(game_id: int) -> dict | None:
     return await _fetch(f"{WEB}/gamecenter/{game_id}/landing")
 
 
+async def get_game_right_rail(game_id: int) -> dict | None:
+    return await _fetch(f"{WEB}/gamecenter/{game_id}/right-rail")
+
+
 async def get_gamecenter_boxscore(game_id: int) -> dict | None:
     return await _fetch(f"{WEB}/gamecenter/{game_id}/boxscore")
 
@@ -103,6 +107,50 @@ async def get_all_teams() -> list | None:
     if data and isinstance(data, dict):
         return data.get("data", [])
     return None
+
+
+async def get_team_stats(season: str = "20242025", game_type: int = 2) -> list | None:
+    cayenne = f"cayenneExp=seasonId={season}%20and%20gameTypeId={game_type}"
+    data = await _fetch(f"{STATS}/team/summary?{cayenne}&limit=100")
+    if data and isinstance(data, dict):
+        return data.get("data", [])
+    return None
+
+
+async def get_team_stats_full(season: str = "20242025") -> dict | None:
+    result = {}
+    for report in ["summary", "realtime", "powerplay", "penaltykill", "goalsforbystrength", "faceoffpercentages"]:
+        cayenne = f"cayenneExp=seasonId={season}%20and%20gameTypeId=2"
+        data = await _fetch(f"{STATS}/team/{report}?{cayenne}&limit=100")
+        if data and isinstance(data, dict):
+            result[report] = data.get("data", [])
+    return result
+
+
+async def get_skater_stats(season: str = "20242025", game_type: int = 2,
+                           report: str = "summary", limit: int = 50) -> list | None:
+    cayenne = f"cayenneExp=seasonId={season}%20and%20gameTypeId={game_type}"
+    data = await _fetch(f"{STATS}/skater/{report}?{cayenne}&limit={limit}")
+    if data and isinstance(data, dict):
+        return data.get("data", [])
+    return None
+
+
+async def get_goalie_stats(season: str = "20242025", game_type: int = 2,
+                           report: str = "summary", limit: int = 50) -> list | None:
+    cayenne = f"cayenneExp=seasonId={season}%20and%20gameTypeId={game_type}"
+    data = await _fetch(f"{STATS}/goalie/{report}?{cayenne}&limit={limit}")
+    if data and isinstance(data, dict):
+        return data.get("data", [])
+    return None
+
+
+async def get_skater_leaders() -> dict | None:
+    return await _fetch(f"{WEB}/skater-stats-leaders/current")
+
+
+async def get_goalie_leaders() -> dict | None:
+    return await _fetch(f"{WEB}/goalie-stats-leaders/current")
 
 
 async def get_player_landing(player_id: int) -> dict | None:
