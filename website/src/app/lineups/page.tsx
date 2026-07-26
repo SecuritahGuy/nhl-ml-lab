@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Navbar from "@/components/Navbar";
-import { apiUrl } from "@/lib/api";
 
 interface Leader {
   player_id: number;
@@ -38,7 +37,7 @@ export default function LineupsPage() {
     if (!gameId) return;
     setLoading(true);
     try {
-      const res = await fetch(apiUrl(`/api/lineups/game/${gameId}`));
+      const res = await fetch(`/api/lineups/game/${gameId}`);
       const json = await res.json();
       setData(json as LineupData);
     } catch (e) {

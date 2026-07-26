@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import Navbar from "@/components/Navbar";
-import { apiUrl } from "@/lib/api";
 
 interface TeamInfo {
   abbrev: string;
@@ -61,8 +60,8 @@ export default function SchedulePage() {
     setLoading(true);
     try {
       const [scheduleRes, predsRes] = await Promise.all([
-        fetch(apiUrl(mode === "team" ? `/api/schedule/team/${selectedTeam}` : "/api/schedule")),
-        fetch(apiUrl("/api/predictions")),
+        fetch(mode === "team" ? `/api/schedule/team/${selectedTeam}` : "/api/schedule"),
+        fetch("/api/predictions"),
       ]);
       const scheduleJson = await scheduleRes.json();
       if (mode === "team") setTeamData(scheduleJson);
@@ -101,7 +100,7 @@ export default function SchedulePage() {
 
   const fetchTeams = async () => {
     try {
-      const res = await fetch(apiUrl("/api/teams"));
+      const res = await fetch("/api/teams");
       const json = await res.json();
       if (json.teams) setTeams(json.teams.map((t: any) => t.abbrev));
     } catch (e) {

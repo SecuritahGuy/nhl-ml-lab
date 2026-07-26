@@ -1,6 +1,6 @@
-import { TeamStats, GameInfo, fetchTeamStats, fetchSeasonGames, fetchGoalieStats, fetchSkaterStats } from "./nhl";
-import { TEAM_ABBREV_TO_ID } from "./locations";
-import { travelDistanceMiles, tzCrossed, altitudeAdvantageFt, highAltitudeHome } from "./locations";
+import { TeamStats, GameInfo, fetchTeamStats, fetchSeasonGames, fetchGoalieStats, fetchSkaterStats } from "./_nhl";
+import { TEAM_ABBREV_TO_ID } from "./_locations";
+import { travelDistanceMiles, tzCrossed, altitudeAdvantageFt, highAltitudeHome } from "./_locations";
 
 const ROLLING_WINDOWS = [3, 5, 10, 20];
 const DECAY_FACTORS = [0.7, 0.8, 0.9];
@@ -127,11 +127,7 @@ function buildGoalieMap(raw: any): Record<number, { goalie_sv_pct: number; goali
         const tid = TEAM_ABBREV_TO_ID[abbrev];
         if (!tid) continue;
         if (!teamGoalies[tid]) teamGoalies[tid] = [];
-        teamGoalies[tid].push({
-          gs: g.gamesStarted ?? 0,
-          sv_pct: g.savePct ?? 0.0,
-          gaa: g.goalsAgainstAverage ?? 3.0,
-        });
+        teamGoalies[tid].push({ gs: g.gamesStarted ?? 0, sv_pct: g.savePct ?? 0.0, gaa: g.goalsAgainstAverage ?? 3.0 });
       }
     }
   }
@@ -159,11 +155,7 @@ function buildSkaterMap(raw: any): Record<number, { top_scorer_ppg: number; team
         const tid = TEAM_ABBREV_TO_ID[abbrev];
         if (!tid) continue;
         if (!teamSkaters[tid]) teamSkaters[tid] = [];
-        teamSkaters[tid].push({
-          gp: s.gamesPlayed ?? 0,
-          ppg: s.pointsPerGame ?? 0.0,
-          points: s.points ?? 0,
-        });
+        teamSkaters[tid].push({ gp: s.gamesPlayed ?? 0, ppg: s.pointsPerGame ?? 0.0, points: s.points ?? 0 });
       }
     }
   }
@@ -179,10 +171,7 @@ function buildSkaterMap(raw: any): Record<number, { top_scorer_ppg: number; team
     eligible.sort((a, b) => b.ppg - a.ppg);
     const totalP = eligible.reduce((sum, s) => sum + s.points, 0);
     const totalGP = eligible.reduce((sum, s) => sum + s.gp, 0);
-    result[tid] = {
-      top_scorer_ppg: eligible[0].ppg,
-      team_avg_ppg: totalGP > 0 ? totalP / totalGP : 0.3,
-    };
+    result[tid] = { top_scorer_ppg: eligible[0].ppg, team_avg_ppg: totalGP > 0 ? totalP / totalGP : 0.3 };
   }
   return result;
 }
@@ -239,31 +228,37 @@ function buildFeatureVector(
     hsk.team_avg_ppg, ask.team_avg_ppg,
   ];
 
-  const allSuffixes: string[] = [];
-  for (const w of ROLLING_WINDOWS) {
-    allSuffixes.push(`gf_roll${w}`, `ga_roll${w}`, `win_roll${w}`);
-  }
-  for (const d of DECAY_FACTORS) {
-    const label = String(d).replace(".", "");
-    allSuffixes.push(`gf_decay${label}`, `ga_decay${label}`, `win_decay${label}`);
-  }
-  allSuffixes.push("rest_days");
+  function buildRollingArray(stats: TeamStats, roll: Record<string, number>, wp: number): number[] {
+    const out: number[] = [];
+    const allPrefixes: string[] = [];
+    for (const w of ROLLING_WINDOWS) {
+      allPrefixes.push(`gf_roll${w}`, `ga_roll${w}`, `win_roll${w}`);
+    }
+    for (const d of DECAY_FACTORS) {
+      const label = String(d).replace(".", "");
+      allPrefixes.push(`gf_decay${label}`, `ga_decay${label}`, `win_decay${label}`);
+    }
+    allPrefixes.push("rest_days");
 
-  function safeRoll(roll: Record<string, number>, suffix: string, gfFb: number, gaFb: number, wpFb: number): number {
-    if (suffix === "rest_days") return roll[suffix] ?? 3;
-    const val = roll[suffix];
-    if (val !== undefined) return val;
-    if (suffix.startsWith("gf_")) return gfFb;
-    if (suffix.startsWith("ga_")) return gaFb;
-    return wpFb;
+    for (const sfx of allPrefixes) {
+      if (sfx === "rest_days") {
+        out.push(roll[sfx] ?? 3);
+        continue;
+      }
+      const val = roll[sfx];
+      if (val !== undefined) {
+        out.push(val);
+        continue;
+      }
+      if (sfx.startsWith("gf_")) out.push(stats.gf_per_game);
+      else if (sfx.startsWith("ga_")) out.push(stats.ga_per_game);
+      else out.push(wp);
+    }
+    return out;
   }
 
-  for (const sfx of allSuffixes) {
-    fts.push(safeRoll(homeRoll, sfx, hGfPerGame, hGaPerGame, hWp));
-  }
-  for (const sfx of allSuffixes) {
-    fts.push(safeRoll(awayRoll, sfx, aws.gf_per_game, aws.ga_per_game, aWp));
-  }
+  fts.push(...buildRollingArray(hs, homeRoll, hWp));
+  fts.push(...buildRollingArray(aws, awayRoll, aWp));
 
   return fts;
 }

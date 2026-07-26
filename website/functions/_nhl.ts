@@ -76,25 +76,13 @@ export async function fetchSeasonGames(season: string): Promise<GameInfo[]> {
   return data?.data ?? [];
 }
 
-export interface GoalieStats {
-  gamesStarted: number;
-  savePct: number;
-  goalsAgainstAverage: number;
-}
-
-export function fetchGoalieStats(season: string): Promise<any> {
+export async function fetchGoalieStats(season: string): Promise<any> {
   return nhlFetch(
     `${STATS_API}/goalie/summary?cayenneExp=seasonId=${season}%20and%20gameTypeId=2&limit=200`
   );
 }
 
-export interface SkaterStats {
-  gamesPlayed: number;
-  pointsPerGame: number;
-  points: number;
-}
-
-export function fetchSkaterStats(season: string): Promise<any> {
+export async function fetchSkaterStats(season: string): Promise<any> {
   return nhlFetch(
     `${STATS_API}/skater/summary?cayenneExp=seasonId=${season}%20and%20gameTypeId=2&limit=1000`
   );
@@ -109,7 +97,7 @@ export async function fetchGamecenterBoxscore(gameId: number): Promise<any> {
 }
 
 export async function fetchScoreboardNow(): Promise<any> {
-  return nhlFetch(`${WEB_API}/scoreboard/now`);
+  return nhlFetch(`${WEB_API}/score/now`);
 }
 
 export async function fetchTeamRoster(teamAbbrev: string, season: string): Promise<any> {

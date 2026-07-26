@@ -1,4 +1,4 @@
-import modelParams from "./model.json";
+import { MODEL_PARAMS } from "./_model";
 
 export interface PredictionResult {
   home_win_probability: number;
@@ -12,22 +12,19 @@ export interface PredictionResult {
 
 export function predict(features: number[]): PredictionResult | null {
   try {
-    const { scaler_mean, scaler_scale, coef, intercept } = modelParams;
+    const { scaler_mean, scaler_scale, coef, intercept } = MODEL_PARAMS;
 
-    // StandardScaler: (X - mean) / scale
     const scaled = features.map((x, i) => {
       const mean = scaler_mean[i];
       const scale = scaler_scale[i];
       return scale > 0 ? (x - mean) / scale : 0;
     });
 
-    // Logistic regression: z = sum(scaled[i] * coef[i]) + intercept
     let z = intercept;
     for (let i = 0; i < scaled.length; i++) {
       z += scaled[i] * coef[i];
     }
 
-    // Sigmoid
     const homeProb = 1 / (1 + Math.exp(-z));
     const awayProb = 1 - homeProb;
 
