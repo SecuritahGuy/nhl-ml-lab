@@ -1,5 +1,5 @@
-// Feature count: 52 base + 29 rolling×2 = 110 features
-import { TeamStats, GameInfo, fetchTeamStats, fetchSeasonGames, fetchGoalieStats, fetchSkaterStats } from "./_nhl";
+// Feature count: 52 base + 50 rolling×2 = 152 features
+import { TeamStats, GameInfo, ShotStats, fetchTeamStats, fetchSeasonGames, fetchGoalieStats, fetchSkaterStats, fetchGameBoxscoreShots } from "./_nhl";
 import { TEAM_ABBREV_TO_ID } from "./_locations";
 import { travelDistanceMiles, tzCrossed, altitudeAdvantageFt, highAltitudeHome } from "./_locations";
 
@@ -52,8 +52,22 @@ export async function buildFeaturesForGame(
 
   const gd = new Date(gameDate);
 
-  const homeRoll = computeRollingForTeam(homeTid, gd, games);
-  const awayRoll = computeRollingForTeam(awayTid, gd, games);
+  // Fetch boxscores for prior games to compute rolling Corsi
+  const priorGames = games.filter(g => {
+    if (g.gameStateId !== 7) return false;
+    if (g.gameType !== 2 && g.gameType !== 3) return false;
+    return new Date(g.gameDate) < gd;
+  });
+  const shotEntries = await Promise.all(
+    priorGames.map(g => fetchGameBoxscoreShots(g.id).then(s => [g.id, s] as const))
+  );
+  const shotMap: Record<number, ShotStats> = {};
+  for (const [id, s] of shotEntries) {
+    if (s) shotMap[id] = s;
+  }
+
+  const homeRoll = computeRollingForTeam(homeTid, gd, games, shotMap);
+  const awayRoll = computeRollingForTeam(awayTid, gd, games, shotMap);
 
   const homeB2b = checkBackToBack(homeTid, gd, games);
   const awayB2b = checkBackToBack(awayTid, gd, games);
@@ -99,9 +113,11 @@ interface PriorGame {
   ga: number;
   gd: number;
   win: number;
+  cf: number;
+  ca: number;
 }
 
-function computeRollingForTeam(teamId: number, gameDate: Date, games: GameInfo[]): Record<string, number> {
+function computeRollingForTeam(teamId: number, gameDate: Date, games: GameInfo[], shotMap?: Record<number, ShotStats>): Record<string, number> {
   const prior: PriorGame[] = [];
 
   for (const g of games) {
@@ -114,7 +130,13 @@ function computeRollingForTeam(teamId: number, gameDate: Date, games: GameInfo[]
       const gf = g.homeTeamId === teamId ? g.homeScore : g.visitingScore;
       const ga = g.homeTeamId === teamId ? g.visitingScore : g.homeScore;
       const win = gf > ga ? 1 : 0;
-      prior.push({ date: gd, gf, ga, gd: gf - ga, win });
+      let cf = 50, ca = 50;
+      const sd = shotMap?.[g.id];
+      if (sd) {
+        cf = g.homeTeamId === teamId ? sd.home_corsi_for : sd.away_corsi_for;
+        ca = g.homeTeamId === teamId ? sd.home_corsi_against : sd.away_corsi_against;
+      }
+      prior.push({ date: gd, gf, ga, gd: gf - ga, win, cf, ca });
     }
   }
 
@@ -132,8 +154,10 @@ function computeRollingForTeam(teamId: number, gameDate: Date, games: GameInfo[]
     return values.reduce((sum, v, i) => sum + v * weights[i], 0) / totalWeight;
   }
 
-  for (const [statKey, key] of [["gf", "gf"], ["ga", "ga"], ["gd", "gd"], ["win", "win"]] as const) {
-    const vals = prior.map(r => statKey === "gf" ? r.gf : statKey === "ga" ? r.ga : statKey === "gd" ? r.gd : r.win);
+  for (const [statKey, key] of [["gf", "gf"], ["ga", "ga"], ["gd", "gd"], ["win", "win"], ["cf", "cf"], ["ca", "ca"]] as const) {
+    const vals = prior.map(r =>
+      statKey === "gf" ? r.gf : statKey === "ga" ? r.ga : statKey === "gd" ? r.gd : statKey === "win" ? r.win : statKey === "cf" ? r.cf : r.ca
+    );
 
     for (const w of ROLLING_WINDOWS) {
       const window = vals.slice(0, w);
@@ -143,6 +167,21 @@ function computeRollingForTeam(teamId: number, gameDate: Date, games: GameInfo[]
     for (const d of DECAY_FACTORS) {
       const label = String(d).replace(".", "");
       result[`${key}_decay${label}`] = expWeighted(vals, d);
+    }
+  }
+
+  // cd = cf - ca
+  {
+    const cfVals = prior.map(r => r.cf);
+    const caVals = prior.map(r => r.ca);
+    const cdVals = cfVals.map((v, i) => v - caVals[i]);
+    for (const w of ROLLING_WINDOWS) {
+      const window = cdVals.slice(0, w);
+      result[`cd_roll${w}`] = window.reduce((a, b) => a + b, 0) / window.length;
+    }
+    for (const d of DECAY_FACTORS) {
+      const label = String(d).replace(".", "");
+      result[`cd_decay${label}`] = expWeighted(cdVals, d);
     }
   }
 
@@ -269,13 +308,16 @@ function buildFeatureVector(
     homeRc, awayRc, dos,
   ];
 
-  function buildRollingArray(stats: TeamStats, roll: Record<string, number>, wp: number): number[] {
+  function buildRollingArray(stats: TeamStats, roll: Record<string, number>, wp: number, cf: number, ca: number): number[] {
     const out: number[] = [];
     const allPrefixes: string[] = [];
     for (const w of ROLLING_WINDOWS) allPrefixes.push(`gf_roll${w}`);
     for (const w of ROLLING_WINDOWS) allPrefixes.push(`ga_roll${w}`);
     for (const w of ROLLING_WINDOWS) allPrefixes.push(`gd_roll${w}`);
     for (const w of ROLLING_WINDOWS) allPrefixes.push(`win_roll${w}`);
+    for (const w of ROLLING_WINDOWS) allPrefixes.push(`cf_roll${w}`);
+    for (const w of ROLLING_WINDOWS) allPrefixes.push(`ca_roll${w}`);
+    for (const w of ROLLING_WINDOWS) allPrefixes.push(`cd_roll${w}`);
     for (const d of DECAY_FACTORS) {
       const label = String(d).replace(".", "");
       allPrefixes.push(`gf_decay${label}`);
@@ -292,6 +334,18 @@ function buildFeatureVector(
       const label = String(d).replace(".", "");
       allPrefixes.push(`win_decay${label}`);
     }
+    for (const d of DECAY_FACTORS) {
+      const label = String(d).replace(".", "");
+      allPrefixes.push(`cf_decay${label}`);
+    }
+    for (const d of DECAY_FACTORS) {
+      const label = String(d).replace(".", "");
+      allPrefixes.push(`ca_decay${label}`);
+    }
+    for (const d of DECAY_FACTORS) {
+      const label = String(d).replace(".", "");
+      allPrefixes.push(`cd_decay${label}`);
+    }
     allPrefixes.push("rest_days");
 
     for (const sfx of allPrefixes) {
@@ -307,13 +361,16 @@ function buildFeatureVector(
       if (sfx.startsWith("gf_")) out.push(stats.gf_per_game);
       else if (sfx.startsWith("ga_")) out.push(stats.ga_per_game);
       else if (sfx.startsWith("gd_")) out.push(stats.gf_per_game - stats.ga_per_game);
+      else if (sfx.startsWith("cf_")) out.push(cf);
+      else if (sfx.startsWith("ca_")) out.push(ca);
+      else if (sfx.startsWith("cd_")) out.push(cf - ca);
       else out.push(wp);
     }
     return out;
   }
 
-  fts.push(...buildRollingArray(hs, homeRoll, hWp));
-  fts.push(...buildRollingArray(aws, awayRoll, aWp));
+  fts.push(...buildRollingArray(hs, homeRoll, hWp, 50, 50));
+  fts.push(...buildRollingArray(aws, awayRoll, aWp, 50, 50));
 
   return fts;
 }

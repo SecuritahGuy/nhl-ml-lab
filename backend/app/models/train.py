@@ -41,10 +41,16 @@ ROLLING_SUFFIXES = (
     + [f"ga_roll{w}" for w in ROLLING_WINDOWS]
     + [f"gd_roll{w}" for w in ROLLING_WINDOWS]
     + [f"win_roll{w}" for w in ROLLING_WINDOWS]
+    + [f"cf_roll{w}" for w in ROLLING_WINDOWS]
+    + [f"ca_roll{w}" for w in ROLLING_WINDOWS]
+    + [f"cd_roll{w}" for w in ROLLING_WINDOWS]
     + [f"gf_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"ga_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"gd_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"win_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
+    + [f"cf_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
+    + [f"ca_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
+    + [f"cd_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + ["rest_days"]
 )
 
@@ -186,7 +192,48 @@ async def fetch_skater_stats_by_team(season: str) -> dict[int, dict]:
     return result
 
 
+def parse_game_shots(boxscore: dict, home_team_id: int, away_team_id: int) -> dict:
+    pgs = boxscore.get("playerByGameStats", {})
+    result: dict = {}
+    for side_key, prefix in [("awayTeam", f"away"), ("homeTeam", f"home")]:
+        team_players = pgs.get(side_key, {})
+        skaters = team_players.get("forwards", []) + team_players.get("defense", [])
+        sog = sum(s.get("sog", 0) for s in skaters)
+        blk = sum(s.get("blockedShots", 0) for s in skaters)
+        hits = sum(s.get("hits", 0) for s in skaters)
+        gv = sum(s.get("giveaways", 0) for s in skaters)
+        tk = sum(s.get("takeaways", 0) for s in skaters)
+        result[f"{prefix}_sog_for"] = sog
+        result[f"{prefix}_sog_against"] = 0
+        result[f"{prefix}_blocked_defensive"] = blk
+        result[f"{prefix}_hits"] = hits
+        result[f"{prefix}_giveaways"] = gv
+        result[f"{prefix}_takeaways"] = tk
+    result["home_sog_against"] = result["away_sog_for"]
+    result["away_sog_against"] = result["home_sog_for"]
+    h_block = result["home_blocked_defensive"]
+    a_block = result["away_blocked_defensive"]
+    result["home_corsi_for"] = result["home_sog_for"] + a_block
+    result["home_corsi_against"] = result["home_sog_against"] + h_block
+    result["away_corsi_for"] = result["away_sog_for"] + h_block
+    result["away_corsi_against"] = result["away_sog_against"] + a_block
+    return result
+
+
+async def fetch_game_shot_data(game_id: int, home_tid: int, away_tid: int,
+                               client: httpx.AsyncClient) -> dict | None:
+    url = f"{WEB_API}/gamecenter/{game_id}/boxscore"
+    try:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return parse_game_shots(resp.json(), home_tid, away_tid)
+    except Exception as e:
+        logger.warning(f"Boxscore fetch error for game {game_id}: {e}")
+        return None
+
+
 async def build_training_data(seasons: list[str]) -> pd.DataFrame:
+    game_to_shot: dict[int, dict] = {}
     rows = []
     for season in seasons:
         games = await fetch_games(season)
@@ -194,6 +241,29 @@ async def build_training_data(seasons: list[str]) -> pd.DataFrame:
         ts = await fetch_team_stats(season)
         gs_by_team = await fetch_goalie_stats_by_team(season)
         sk_by_team = await fetch_skater_stats_by_team(season)
+
+        # Fetch boxscores concurrently for shot data
+        valid_games = []
+        for g in games:
+            if g.get("gameStateId") != 7:
+                continue
+            gt = g.get("gameType")
+            if gt not in (2, 3):
+                continue
+            valid_games.append(g)
+
+        sem = asyncio.Semaphore(25)
+        async def _fetch_shot(g: dict) -> dict | None:
+            async with sem:
+                return await fetch_game_shot_data(
+                    g["id"], g["homeTeamId"], g["visitingTeamId"],
+                    httpx.AsyncClient(timeout=15.0)
+                )
+        shot_results = await asyncio.gather(*[_fetch_shot(g) for g in valid_games])
+        for g, shot in zip(valid_games, shot_results):
+            if shot:
+                game_to_shot[g["id"]] = shot
+
         for g in games:
             if g.get("gameStateId") != 7:
                 continue
@@ -213,6 +283,12 @@ async def build_training_data(seasons: list[str]) -> pd.DataFrame:
                 "away_score": g["visitingScore"],
                 "home_win": 1 if g["homeScore"] > g["visitingScore"] else 0,
             }
+            sd = game_to_shot.get(g["id"], {})
+            for side in ["home", "away"]:
+                for k in ["sog_for", "sog_against", "corsi_for", "corsi_against",
+                          "blocked_defensive", "hits", "giveaways", "takeaways"]:
+                    row[f"{side}_{k}"] = sd.get(f"{side}_{k}", 0)
+
             hs = ts.get(home_tid, {})
             aws = ts.get(away_tid, {})
             for prefix, s in [("home", hs), ("away", aws)]:
@@ -375,6 +451,12 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         "home_pp_opp_per_game", "away_pp_opp_per_game",
         "home_tsh_per_game", "away_tsh_per_game",
         "home_es_gf_per_game", "away_es_gf_per_game",
+        "home_sog_for", "away_sog_for", "home_sog_against", "away_sog_against",
+        "home_corsi_for", "away_corsi_for", "home_corsi_against", "away_corsi_against",
+        "home_blocked_defensive", "away_blocked_defensive",
+        "home_hits", "away_hits",
+        "home_giveaways", "away_giveaways",
+        "home_takeaways", "away_takeaways",
         "home_rest_cat", "away_rest_cat", "day_of_season",
         "game_id", "game_date", "home_team_id", "away_team_id",
         "home_score", "away_score", "home_win", "season", "game_type",
@@ -390,6 +472,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         tg["goals_against"] = np.where(tg["is_home"], tg["away_score"], tg["home_score"])
         tg["goal_diff"] = tg["goals_for"] - tg["goals_against"]
         tg["team_win"] = np.where(tg["is_home"], tg["home_win"], 1 - tg["home_win"])
+        tg["corsi_for"] = np.where(tg["is_home"], tg["home_corsi_for"], tg["away_corsi_for"])
+        tg["corsi_against"] = np.where(tg["is_home"], tg["home_corsi_against"], tg["away_corsi_against"])
+        tg["corsi_diff"] = tg["corsi_for"] - tg["corsi_against"]
 
         # simple rolling averages
         for w in ROLLING_WINDOWS:
@@ -397,6 +482,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
             tg[f"ga_roll{w}"] = tg["goals_against"].rolling(w, min_periods=1).mean().shift(1)
             tg[f"gd_roll{w}"] = tg["goal_diff"].rolling(w, min_periods=1).mean().shift(1)
             tg[f"win_roll{w}"] = tg["team_win"].rolling(w, min_periods=1).mean().shift(1)
+            tg[f"cf_roll{w}"] = tg["corsi_for"].rolling(w, min_periods=1).mean().shift(1)
+            tg[f"ca_roll{w}"] = tg["corsi_against"].rolling(w, min_periods=1).mean().shift(1)
+            tg[f"cd_roll{w}"] = tg["corsi_diff"].rolling(w, min_periods=1).mean().shift(1)
 
         # exponential decay rolling
         for d in DECAY_FACTORS:
@@ -405,6 +493,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
             tg[f"ga_decay{label}"] = _exp_weighted_rolling(tg["goals_against"], d).shift(1)
             tg[f"gd_decay{label}"] = _exp_weighted_rolling(tg["goal_diff"], d).shift(1)
             tg[f"win_decay{label}"] = _exp_weighted_rolling(tg["team_win"], d).shift(1)
+            tg[f"cf_decay{label}"] = _exp_weighted_rolling(tg["corsi_for"], d).shift(1)
+            tg[f"ca_decay{label}"] = _exp_weighted_rolling(tg["corsi_against"], d).shift(1)
+            tg[f"cd_decay{label}"] = _exp_weighted_rolling(tg["corsi_diff"], d).shift(1)
 
         tg["rest_days"] = tg["game_date"].diff().dt.days.fillna(3)
         tg["team_id"] = tid
@@ -443,6 +534,12 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
                 fallback = result.get(f"{side}_gf_per_game", 3.0) - result.get(f"{side}_ga_per_game", 3.0)
             elif stat_type == "win":
                 fallback = result.get(f"{side}_win_pct", 0.5)
+            elif stat_type == "cf":
+                fallback = result.get(f"{side}_corsi_for", 50)
+            elif stat_type == "ca":
+                fallback = result.get(f"{side}_corsi_against", 50)
+            elif stat_type == "cd":
+                fallback = result.get(f"{side}_corsi_for", 50) - result.get(f"{side}_corsi_against", 50)
             else:
                 fallback = 0
             result[col] = result[col].fillna(fallback)

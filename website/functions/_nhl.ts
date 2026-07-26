@@ -88,6 +88,39 @@ export async function fetchTeamStats(season: string): Promise<Record<number, Tea
   return map;
 }
 
+export interface ShotStats {
+  home_sog_for: number;
+  away_sog_for: number;
+  home_corsi_for: number;
+  away_corsi_for: number;
+  home_corsi_against: number;
+  away_corsi_against: number;
+}
+
+export async function fetchGameBoxscoreShots(gameId: number): Promise<ShotStats | null> {
+  const data = await nhlFetch(`${WEB_API}/gamecenter/${gameId}/boxscore`);
+  if (!data?.playerByGameStats) return null;
+  return parseBoxscoreShots(data, gameId);
+}
+
+export function parseBoxscoreShots(boxscore: any, _gameId: number): ShotStats {
+  const pgs = boxscore.playerByGameStats ?? {};
+  const awayPlayers = (pgs.awayTeam?.forwards ?? []).concat(pgs.awayTeam?.defense ?? []);
+  const homePlayers = (pgs.homeTeam?.forwards ?? []).concat(pgs.homeTeam?.defense ?? []);
+  const awaySog = awayPlayers.reduce((s: number, p: any) => s + (p.sog ?? 0), 0);
+  const homeSog = homePlayers.reduce((s: number, p: any) => s + (p.sog ?? 0), 0);
+  const awayBlk = awayPlayers.reduce((s: number, p: any) => s + (p.blockedShots ?? 0), 0);
+  const homeBlk = homePlayers.reduce((s: number, p: any) => s + (p.blockedShots ?? 0), 0);
+  return {
+    home_sog_for: homeSog,
+    away_sog_for: awaySog,
+    home_corsi_for: homeSog + awayBlk,
+    away_corsi_for: awaySog + homeBlk,
+    home_corsi_against: awaySog + homeBlk,
+    away_corsi_against: homeSog + awayBlk,
+  };
+}
+
 export interface GameInfo {
   id: number;
   season: string;

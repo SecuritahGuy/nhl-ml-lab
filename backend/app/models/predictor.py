@@ -11,10 +11,16 @@ ROLLING_SUFFIXES = (
     + [f"ga_roll{w}" for w in ROLLING_WINDOWS]
     + [f"gd_roll{w}" for w in ROLLING_WINDOWS]
     + [f"win_roll{w}" for w in ROLLING_WINDOWS]
+    + [f"cf_roll{w}" for w in ROLLING_WINDOWS]
+    + [f"ca_roll{w}" for w in ROLLING_WINDOWS]
+    + [f"cd_roll{w}" for w in ROLLING_WINDOWS]
     + [f"gf_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"ga_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"gd_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + [f"win_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
+    + [f"cf_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
+    + [f"ca_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
+    + [f"cd_decay{str(d).replace('.', '')}" for d in DECAY_FACTORS]
     + ["rest_days"]
 )
 
@@ -153,6 +159,14 @@ def predict_game(home_team: str, away_team: str,
                 out.append(_safe(stats, sfx, ga_fb))
             elif stat_type == "gd":
                 out.append(_safe(stats, sfx, gf_fb - ga_fb))
+            elif stat_type == "cf":
+                out.append(_safe(stats, sfx, _safe(stats, "corsi_for", 50)))
+            elif stat_type == "ca":
+                out.append(_safe(stats, sfx, _safe(stats, "corsi_against", 50)))
+            elif stat_type == "cd":
+                cf = _safe(stats, "corsi_for", 50)
+                ca = _safe(stats, "corsi_against", 50)
+                out.append(_safe(stats, sfx, cf - ca))
             else:
                 out.append(_safe(stats, sfx, wp_fb))
         return out
