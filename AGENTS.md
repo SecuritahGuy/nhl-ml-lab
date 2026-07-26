@@ -60,7 +60,7 @@ TypeScript must match. When changing `ROLLING_SUFFIXES`, update `buildRollingArr
 
 - Base + context + player: 52 features (16 team-season, 9 differentials, 6 game context, 8 player, 4 team-advanced, 5 rest/day)
 - Rolling per team: 50 features (4 gf_roll + 4 ga_roll + 4 gd_roll + 4 win_roll + 4 cf_roll + 4 ca_roll + 4 cd_roll + 3 gf_decay + 3 ga_decay + 3 gd_decay + 3 win_decay + 3 cf_decay + 3 ca_decay + 3 cd_decay + 1 rest_days)
-- **Total: 52 + 50×2 = 152 features**
+- **Total: 52 + 50×2 − 10 pruned = 142 features**
 
 ## Common Tasks with Sub-Agents
 

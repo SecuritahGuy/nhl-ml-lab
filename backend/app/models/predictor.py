@@ -6,6 +6,13 @@ import joblib
 
 ROLLING_WINDOWS = [3, 5, 10, 20]
 DECAY_FACTORS = [0.7, 0.8, 0.9]
+EXCLUDED_FEATURES = {
+    "home_sf_per_game", "home_pk_pct", "home_goalie_sv_pct",
+    "away_pk_pct", "tz_crossed",
+    "home_cf_roll10", "home_cf_decay09",
+    "away_cf_roll3", "away_ca_roll20", "away_cd_roll5",
+}
+
 ROLLING_SUFFIXES = (
     [f"gf_roll{w}" for w in ROLLING_WINDOWS]
     + [f"ga_roll{w}" for w in ROLLING_WINDOWS]
@@ -204,18 +211,38 @@ def predict_game(home_team: str, away_team: str,
     h_es_gf = _safe(hs, "es_gf_per_game", 1.8)
     a_es_gf = _safe(aws, "es_gf_per_game", 1.8)
 
-    features = [h_gf, h_ga, h_pp, h_pk, h_fo, h_sf, h_sa, h_pt,
-                a_gf, a_ga, a_pp, a_pk, a_fo, a_sf, a_sa, a_pt,
-                h_wp, a_wp,
-                gf_diff, ga_diff, net_diff, st_diff, shot_diff,
-                corsi_diff, fo_diff, pp_diff, pk_diff,
-                home_b2b, away_b2b, travel_miles, tz_crossed_, alt_advantage, high_alt_home,
-                h_goalie_sv, a_goalie_sv,
-                h_goalie_gaa, a_goalie_gaa,
-                h_top_ppg, a_top_ppg,
-                h_avg_ppg, a_avg_ppg,
-                h_sat, a_sat, h_pp_opp, a_pp_opp, h_tsh, a_tsh, h_es_gf, a_es_gf,
-                home_rest_cat, away_rest_cat, day_of_season_] + h_rolling + a_rolling
+    feature_dict = {
+        "home_gf_per_game": h_gf, "home_ga_per_game": h_ga, "home_pp_pct": h_pp,
+        "home_pk_pct": h_pk, "home_fo_pct": h_fo, "home_sf_per_game": h_sf,
+        "home_sa_per_game": h_sa, "home_point_pct": h_pt,
+        "away_gf_per_game": a_gf, "away_ga_per_game": a_ga, "away_pp_pct": a_pp,
+        "away_pk_pct": a_pk, "away_fo_pct": a_fo, "away_sf_per_game": a_sf,
+        "away_sa_per_game": a_sa, "away_point_pct": a_pt,
+        "home_win_pct": h_wp, "away_win_pct": a_wp,
+        "gf_diff": gf_diff, "ga_diff": ga_diff, "net_diff": net_diff,
+        "st_diff": st_diff, "shot_diff": shot_diff,
+        "corsi_diff": corsi_diff, "fo_diff": fo_diff, "pp_diff": pp_diff,
+        "pk_diff": pk_diff,
+        "home_b2b": home_b2b, "away_b2b": away_b2b,
+        "travel_miles": travel_miles, "tz_crossed": tz_crossed_,
+        "alt_advantage": alt_advantage, "high_alt_home": high_alt_home,
+        "home_goalie_sv_pct": h_goalie_sv, "away_goalie_sv_pct": a_goalie_sv,
+        "home_goalie_gaa": h_goalie_gaa, "away_goalie_gaa": a_goalie_gaa,
+        "home_top_scorer_ppg": h_top_ppg, "away_top_scorer_ppg": a_top_ppg,
+        "home_team_avg_ppg": h_avg_ppg, "away_team_avg_ppg": a_avg_ppg,
+        "home_sat_pct": h_sat, "away_sat_pct": a_sat,
+        "home_pp_opp_per_game": h_pp_opp, "away_pp_opp_per_game": a_pp_opp,
+        "home_tsh_per_game": h_tsh, "away_tsh_per_game": a_tsh,
+        "home_es_gf_per_game": h_es_gf, "away_es_gf_per_game": a_es_gf,
+        "home_rest_cat": home_rest_cat, "away_rest_cat": away_rest_cat,
+        "day_of_season": day_of_season_,
+    }
+    for sfx in ROLLING_SUFFIXES:
+        feature_dict[f"home_{sfx}"] = h_rolling[ROLLING_SUFFIXES.index(sfx)]
+    for sfx in ROLLING_SUFFIXES:
+        feature_dict[f"away_{sfx}"] = a_rolling[ROLLING_SUFFIXES.index(sfx)]
+
+    features = [v for k, v in feature_dict.items() if k not in EXCLUDED_FEATURES]
 
     ml = predict(features)
     if ml is not None:

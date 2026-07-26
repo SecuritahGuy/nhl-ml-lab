@@ -36,6 +36,13 @@ WEB_API = "https://api-web.nhle.com/v1"
 ROLLING_WINDOWS = [3, 5, 10, 20]
 DECAY_FACTORS = [0.7, 0.8, 0.9]
 
+EXCLUDED_FEATURES = {
+    "home_sf_per_game", "home_pk_pct", "home_goalie_sv_pct",
+    "away_pk_pct", "tz_crossed",
+    "home_cf_roll10", "home_cf_decay09",
+    "away_cf_roll3", "away_ca_roll20", "away_cd_roll5",
+}
+
 ROLLING_SUFFIXES = (
     [f"gf_roll{w}" for w in ROLLING_WINDOWS]
     + [f"ga_roll{w}" for w in ROLLING_WINDOWS]
@@ -571,7 +578,7 @@ def _make_features(df: pd.DataFrame) -> list[str]:
     for side in ["home", "away"]:
         for sfx in ROLLING_SUFFIXES:
             fts.append(f"{side}_{sfx}")
-    return fts
+    return [f for f in fts if f not in EXCLUDED_FEATURES]
 
 
 def train_and_evaluate(df: pd.DataFrame) -> tuple[Pipeline, str, float]:

@@ -1,10 +1,17 @@
-// Feature count: 52 base + 50 rolling×2 = 152 features
+// Feature count: 52 base + 50 rolling×2 - 10 pruned = 142 features
 import { TeamStats, GameInfo, ShotStats, fetchTeamStats, fetchSeasonGames, fetchGoalieStats, fetchSkaterStats, fetchGameBoxscoreShots } from "./_nhl";
 import { TEAM_ABBREV_TO_ID } from "./_locations";
 import { travelDistanceMiles, tzCrossed, altitudeAdvantageFt, highAltitudeHome } from "./_locations";
 
 const ROLLING_WINDOWS = [3, 5, 10, 20];
 const DECAY_FACTORS = [0.7, 0.8, 0.9];
+
+const EXCLUDED_FEATURES = new Set([
+  "home_sf_per_game", "home_pk_pct", "home_goalie_sv_pct",
+  "away_pk_pct", "tz_crossed",
+  "home_cf_roll10", "home_cf_decay09",
+  "away_cf_roll3", "away_ca_roll20", "away_cd_roll5",
+]);
 
 function checkRestCat(teamId: number, gameDate: Date, games: GameInfo[]): number {
   const dates: string[] = [];
@@ -249,6 +256,72 @@ function buildSkaterMap(raw: any): Record<number, { top_scorer_ppg: number; team
   return result;
 }
 
+function buildRollingPrefixes(): string[] {
+  const p: string[] = [];
+  for (const w of ROLLING_WINDOWS) p.push(`gf_roll${w}`);
+  for (const w of ROLLING_WINDOWS) p.push(`ga_roll${w}`);
+  for (const w of ROLLING_WINDOWS) p.push(`gd_roll${w}`);
+  for (const w of ROLLING_WINDOWS) p.push(`win_roll${w}`);
+  for (const w of ROLLING_WINDOWS) p.push(`cf_roll${w}`);
+  for (const w of ROLLING_WINDOWS) p.push(`ca_roll${w}`);
+  for (const w of ROLLING_WINDOWS) p.push(`cd_roll${w}`);
+  for (const d of DECAY_FACTORS) {
+    const label = String(d).replace(".", "");
+    p.push(`gf_decay${label}`);
+  }
+  for (const d of DECAY_FACTORS) {
+    const label = String(d).replace(".", "");
+    p.push(`ga_decay${label}`);
+  }
+  for (const d of DECAY_FACTORS) {
+    const label = String(d).replace(".", "");
+    p.push(`gd_decay${label}`);
+  }
+  for (const d of DECAY_FACTORS) {
+    const label = String(d).replace(".", "");
+    p.push(`win_decay${label}`);
+  }
+  for (const d of DECAY_FACTORS) {
+    const label = String(d).replace(".", "");
+    p.push(`cf_decay${label}`);
+  }
+  for (const d of DECAY_FACTORS) {
+    const label = String(d).replace(".", "");
+    p.push(`ca_decay${label}`);
+  }
+  for (const d of DECAY_FACTORS) {
+    const label = String(d).replace(".", "");
+    p.push(`cd_decay${label}`);
+  }
+  p.push("rest_days");
+  return p;
+}
+
+const ROLLING_PREFIXES = buildRollingPrefixes();
+
+function buildRollingRecord(stats: TeamStats, roll: Record<string, number>, wp: number, cf: number, ca: number): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const sfx of ROLLING_PREFIXES) {
+    if (sfx === "rest_days") {
+      result[sfx] = roll[sfx] ?? 3;
+      continue;
+    }
+    const val = roll[sfx];
+    if (val !== undefined) {
+      result[sfx] = val;
+      continue;
+    }
+    if (sfx.startsWith("gf_")) result[sfx] = stats.gf_per_game;
+    else if (sfx.startsWith("ga_")) result[sfx] = stats.ga_per_game;
+    else if (sfx.startsWith("gd_")) result[sfx] = stats.gf_per_game - stats.ga_per_game;
+    else if (sfx.startsWith("cf_")) result[sfx] = cf;
+    else if (sfx.startsWith("ca_")) result[sfx] = ca;
+    else if (sfx.startsWith("cd_")) result[sfx] = cf - ca;
+    else result[sfx] = wp;
+  }
+  return result;
+}
+
 function buildFeatureVector(
   hs: TeamStats, aws: TeamStats,
   homeRoll: Record<string, number>, awayRoll: Record<string, number>,
@@ -288,91 +361,46 @@ function buildFeatureVector(
   const altAdv = altitudeAdvantageFt(homeTid, awayTid);
   const highAlt = highAltitudeHome(homeTid);
 
-  const fts: number[] = [
-    hGfPerGame, hGaPerGame, hs.pp_pct, hs.pk_pct,
-    hs.fo_pct, hs.sf_per_game, hs.sa_per_game, hs.point_pct,
-    aws.gf_per_game, aws.ga_per_game, aws.pp_pct, aws.pk_pct,
-    aws.fo_pct, aws.sf_per_game, aws.sa_per_game, aws.point_pct,
-    hWp, aWp,
-    gfDiff, gaDiff, netDiff, stDiff, shotDiff,
-    corsiDiff, foDiff, ppDiff, pkDiff,
-    homeB2b, awayB2b, travelMiles, tz, altAdv, highAlt,
-    hg.goalie_sv_pct, ag.goalie_sv_pct,
-    hg.goalie_gaa, ag.goalie_gaa,
-    hsk.top_scorer_ppg, ask.top_scorer_ppg,
-    hsk.team_avg_ppg, ask.team_avg_ppg,
-    hs.sat_pct, aws.sat_pct,
-    hs.pp_opp_per_game, aws.pp_opp_per_game,
-    hs.tsh_per_game, aws.tsh_per_game,
-    hs.es_gf_per_game, aws.es_gf_per_game,
-    homeRc, awayRc, dos,
-  ];
+  const homeRollRecord = buildRollingRecord(hs, homeRoll, hWp, 50, 50);
+  const awayRollRecord = buildRollingRecord(aws, awayRoll, aWp, 50, 50);
 
-  function buildRollingArray(stats: TeamStats, roll: Record<string, number>, wp: number, cf: number, ca: number): number[] {
-    const out: number[] = [];
-    const allPrefixes: string[] = [];
-    for (const w of ROLLING_WINDOWS) allPrefixes.push(`gf_roll${w}`);
-    for (const w of ROLLING_WINDOWS) allPrefixes.push(`ga_roll${w}`);
-    for (const w of ROLLING_WINDOWS) allPrefixes.push(`gd_roll${w}`);
-    for (const w of ROLLING_WINDOWS) allPrefixes.push(`win_roll${w}`);
-    for (const w of ROLLING_WINDOWS) allPrefixes.push(`cf_roll${w}`);
-    for (const w of ROLLING_WINDOWS) allPrefixes.push(`ca_roll${w}`);
-    for (const w of ROLLING_WINDOWS) allPrefixes.push(`cd_roll${w}`);
-    for (const d of DECAY_FACTORS) {
-      const label = String(d).replace(".", "");
-      allPrefixes.push(`gf_decay${label}`);
-    }
-    for (const d of DECAY_FACTORS) {
-      const label = String(d).replace(".", "");
-      allPrefixes.push(`ga_decay${label}`);
-    }
-    for (const d of DECAY_FACTORS) {
-      const label = String(d).replace(".", "");
-      allPrefixes.push(`gd_decay${label}`);
-    }
-    for (const d of DECAY_FACTORS) {
-      const label = String(d).replace(".", "");
-      allPrefixes.push(`win_decay${label}`);
-    }
-    for (const d of DECAY_FACTORS) {
-      const label = String(d).replace(".", "");
-      allPrefixes.push(`cf_decay${label}`);
-    }
-    for (const d of DECAY_FACTORS) {
-      const label = String(d).replace(".", "");
-      allPrefixes.push(`ca_decay${label}`);
-    }
-    for (const d of DECAY_FACTORS) {
-      const label = String(d).replace(".", "");
-      allPrefixes.push(`cd_decay${label}`);
-    }
-    allPrefixes.push("rest_days");
-
-    for (const sfx of allPrefixes) {
-      if (sfx === "rest_days") {
-        out.push(roll[sfx] ?? 3);
-        continue;
-      }
-      const val = roll[sfx];
-      if (val !== undefined) {
-        out.push(val);
-        continue;
-      }
-      if (sfx.startsWith("gf_")) out.push(stats.gf_per_game);
-      else if (sfx.startsWith("ga_")) out.push(stats.ga_per_game);
-      else if (sfx.startsWith("gd_")) out.push(stats.gf_per_game - stats.ga_per_game);
-      else if (sfx.startsWith("cf_")) out.push(cf);
-      else if (sfx.startsWith("ca_")) out.push(ca);
-      else if (sfx.startsWith("cd_")) out.push(cf - ca);
-      else out.push(wp);
-    }
-    return out;
+  const featureDict: Record<string, number> = {
+    "home_gf_per_game": hGfPerGame, "home_ga_per_game": hGaPerGame,
+    "home_pp_pct": hs.pp_pct, "home_pk_pct": hs.pk_pct,
+    "home_fo_pct": hs.fo_pct, "home_sf_per_game": hs.sf_per_game,
+    "home_sa_per_game": hs.sa_per_game, "home_point_pct": hs.point_pct,
+    "away_gf_per_game": aws.gf_per_game, "away_ga_per_game": aws.ga_per_game,
+    "away_pp_pct": aws.pp_pct, "away_pk_pct": aws.pk_pct,
+    "away_fo_pct": aws.fo_pct, "away_sf_per_game": aws.sf_per_game,
+    "away_sa_per_game": aws.sa_per_game, "away_point_pct": aws.point_pct,
+    "home_win_pct": hWp, "away_win_pct": aWp,
+    "gf_diff": gfDiff, "ga_diff": gaDiff, "net_diff": netDiff,
+    "st_diff": stDiff, "shot_diff": shotDiff,
+    "corsi_diff": corsiDiff, "fo_diff": foDiff, "pp_diff": ppDiff,
+    "pk_diff": pkDiff,
+    "home_b2b": homeB2b, "away_b2b": awayB2b,
+    "travel_miles": travelMiles, "tz_crossed": tz, "alt_advantage": altAdv,
+    "high_alt_home": highAlt,
+    "home_goalie_sv_pct": hg.goalie_sv_pct, "away_goalie_sv_pct": ag.goalie_sv_pct,
+    "home_goalie_gaa": hg.goalie_gaa, "away_goalie_gaa": ag.goalie_gaa,
+    "home_top_scorer_ppg": hsk.top_scorer_ppg, "away_top_scorer_ppg": ask.top_scorer_ppg,
+    "home_team_avg_ppg": hsk.team_avg_ppg, "away_team_avg_ppg": ask.team_avg_ppg,
+    "home_sat_pct": hs.sat_pct, "away_sat_pct": aws.sat_pct,
+    "home_pp_opp_per_game": hs.pp_opp_per_game, "away_pp_opp_per_game": aws.pp_opp_per_game,
+    "home_tsh_per_game": hs.tsh_per_game, "away_tsh_per_game": aws.tsh_per_game,
+    "home_es_gf_per_game": hs.es_gf_per_game, "away_es_gf_per_game": aws.es_gf_per_game,
+    "home_rest_cat": homeRc, "away_rest_cat": awayRc, "day_of_season": dos,
+  };
+  for (const sfx of ROLLING_PREFIXES) {
+    featureDict[`home_${sfx}`] = homeRollRecord[sfx];
+  }
+  for (const sfx of ROLLING_PREFIXES) {
+    featureDict[`away_${sfx}`] = awayRollRecord[sfx];
   }
 
-  fts.push(...buildRollingArray(hs, homeRoll, hWp, 50, 50));
-  fts.push(...buildRollingArray(aws, awayRoll, aWp, 50, 50));
-
-  return fts;
+  return Object.entries(featureDict)
+    .filter(([k]) => !EXCLUDED_FEATURES.has(k))
+    .map(([_, v]) => v);
 }
 
 function winPct(s: TeamStats): number {
